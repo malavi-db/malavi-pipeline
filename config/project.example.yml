@@ -1,0 +1,314 @@
+# =============================================================================
+# malavi_rebuild — central project configuration
+# -----------------------------------------------------------------------------
+# Every component (export/, curation/, watcher/, docs/) reads its tunable values
+# from here so that paths, the pinned data release, and query terms live in ONE
+# place. Loaded by:
+#   - R:      export/*.R via yaml::read_yaml("config/project.yml")
+#   - Python: curation/src/malavi_curation/config.py and watcher/*.py
+# =============================================================================
+
+project:
+  name: malavi_rebuild
+  # Curator who receives the watcher's publication batches and submission pings.
+  curator_email: vaellis@udel.edu
+
+# -----------------------------------------------------------------------------
+# Data source of truth: the malaviR R package supplies all tables + the cytb
+# alignment. We pin to a specific release date for reproducibility; bump this
+# (and re-run export/) when malaviR ships a newer bundled release.
+# -----------------------------------------------------------------------------
+malaviR:
+  # Local source checkout (used on BIOMIX). On CI, install from GitHub instead.
+  source_path: /mnt/ellisbiostore/malaviR
+  github: vincenzoaellis/malaviR
+  # Pinned bundled release; "latest" lets malaviR pick the newest it ships.
+  release: "2026-03-23"
+
+# -----------------------------------------------------------------------------
+# The five MalAvi tables, keyed by the snake_case slug used in exported files.
+# `extract_key` is the descriptive name passed to malaviR::extract_table().
+# Column lists are authoritative as of release 2026-03-23 (see schemas/).
+# -----------------------------------------------------------------------------
+tables:
+  hosts_and_sites:
+    extract_key: "Hosts and Sites Table"
+    description: "Every record of a lineage found in a host: the host taxonomy, where it was found, prevalence where the study reported it, and the reference."
+  grand_lineage_summary:
+    extract_key: "Grand Lineage Summary"
+    description: "One row per lineage: its GenBank accession, the morphospecies it is linked to if any, and how many host species, genera, families and orders it has been found in."
+  morpho_species:
+    extract_key: "Morpho Species Summary"
+    description: "Lineages that have been linked to a morphologically described species, with the reference for the link."
+  references:
+    extract_key: "Table of References"
+    description: "Every published paper whose records have been entered into MalAvi."
+  vector_data:
+    extract_key: "Vector Data Table"
+    description: "Lineages detected in arthropod vectors, the detection method, and where."
+  # Not a MalAvi release table: malaviR's host taxonomy key, published here
+  # because it is what lets a MalAvi host name be looked up anywhere else.
+  taxonomy:
+    description: "Every host species in MalAvi matched to the eBird/Clements name and to the tip label used in the clootl phylogeny, with the order and family that follow and how each name was matched. The two names are the same species, but a tree tip can keep an older genus placement, so the columns do not always agree."
+
+alignment:
+  description: "479 bp cytochrome b barcode alignment, one sequence per lineage."
+  length_bp: 479
+  # Shortest run of unambiguous sequence we will name a new lineage from. Cited
+  # on the submit page and enforced by the browser-side sequence checker; both
+  # read it from here so the stated rule and the applied rule cannot drift.
+  min_unambiguous_bp: 470
+  # Genus prefixes on alignment tip labels (P_/H_/L_).
+  genus_prefixes: { P: Plasmodium, H: Haemoproteus, L: Leucocytozoon }
+
+# -----------------------------------------------------------------------------
+# Paths (relative to repo root). Exports land in data/; the website reads them.
+# -----------------------------------------------------------------------------
+paths:
+  data_dir: data
+  docs_data_dir: docs/assets/data   # website copy of the JSON the tables page loads
+
+# -----------------------------------------------------------------------------
+# Community submissions arriving through the public Google Form.
+#
+# The form writes one row per submission to `responses_sheet` and drops each
+# uploaded file into one of the two Drive folders below.
+#
+# ACCESS IS BEING RECONSIDERED (2026-08-06). The retired setup shared all three
+# with "anyone with the link", which let fetch_submissions.py read them over
+# plain HTTPS with no credentials -- deliberate at the time, because an
+# unauthenticated read path has no token to rotate, leak or expire.
+#
+# The cost of that convenience is that anyone who ever sees the link can read
+# every submitter's email address and their unpublished sequences, and the link
+# lives in this file, in git history, in every clone. The decision taken is to
+# restrict access to named curators (a Google Group), which means the fetcher
+# needs an authenticated identity. That work is not done yet, so do not assume
+# either arrangement from these ids alone.
+#
+# `responses_sheet` is the authority. It records, per submission, which files
+# were uploaded, so the fetcher never has to scrape a folder listing: it reads
+# the file IDs straight out of the response row, which also preserves which
+# files belong to which submission.
+# -----------------------------------------------------------------------------
+submissions:
+  # -----------------------------------------------------------------------------
+  # MIGRATION IN PROGRESS, 2026-08-06. The form was rebuilt under
+  # malaviadmin@gmail.com by curation/apps_script/create_submission_form.gs,
+  # moving it off vaellis@udel.edu. Rebuilt rather than transferred only because
+  # nothing outside the project had the link yet.
+  #
+  # The file-upload questions were added by hand on 2026-08-06 (Apps Script
+  # cannot create them), and their Drive folders recorded below. Remaining before
+  # this is a finished move: an end-to-end test submission, switching the new
+  # form to accepting responses, and switching the OLD form OFF. Two live
+  # submission forms is the failure mode -- a submission landing in the orphaned
+  # one would sit there unseen.
+  # -----------------------------------------------------------------------------
+  responses_sheet: ""
+  form_url: "https://docs.google.com/forms/d/e/1FAIpQLSerNc5iuTRXGEpdT-qjtw5u-7AMtCyMXeRGaf9-jdC894bZ1g/viewform"
+  form_edit: ""
+
+  # Created by Google on malaviadmin's Drive when the two file-upload questions
+  # were added by hand, 2026-08-06. The fetcher does not need them -- it reads
+  # file ids straight out of the response row -- but a curator inspecting a
+  # submission by hand does, and so does anyone auditing where uploads land.
+  template_folder: ""
+  materials_folder: ""
+
+  # The retired form, sheet and upload folders on vaellis@udel.edu. Recorded
+  # rather than deleted: the three submissions already in the intake tree came
+  # through it, and the old sheet stays the authoritative log of what was
+  # submitted before the move. Nothing should read these.
+  retired:
+    responses_sheet: ""
+    form_edit: ""
+    template_folder: ""
+    materials_folder: ""
+  # Where fetched submissions land, one directory per response.
+  inbox_dir: curation/intake/submissions
+
+  # Submissions kept on disk but hidden from the public queue and contributor
+  # board. Use this rather than deleting rows from the responses sheet: the sheet
+  # is the authoritative log of what was ever submitted, and deleting from it
+  # loses the timestamp and the audit trail. Excluding here is reversible, is
+  # version-controlled, and records WHY.
+  #
+  # Each entry is a submission directory name under inbox_dir.
+  exclude:
+    - id: 
+      reason: "Test submission while building the form; Gupta worked example, no real data."
+    - id: 
+      reason: "Test submission while building the form; Gupta worked example, no real data."
+    - id: 
+      reason: "Demonstration submission built from release data to exercise the pipeline and produce the screenshots in the curator instructions. Invented study, invented submitter; TUMIG31 and TUMIG25 are not real claims and must never reach the public reservation feed."
+
+# -----------------------------------------------------------------------------
+# Curator review of submissions (the verdict/hold/override workflow).
+#
+# These are the clocks and thresholds the review state machine runs on. They are
+# here rather than in code because they are policy decisions, not implementation
+# details: each one was argued about and each one can be re-argued without
+# touching the state machine.
+# -----------------------------------------------------------------------------
+review:
+  # How long an approved submission waits before it may be released, so a second
+  # curator working the same day can still weigh in. A hold recorded during this
+  # window blocks the release.
+  publish_hold_hours: 24
+  # How often the promoter job runs. It must divide into publish_hold_hours
+  # comfortably: on a daily job an approval recorded at 07:00 would wait nearly
+  # 48 hours, which turns a 24-hour hold into a two-day one.
+  promoter_interval_hours: 6
+  # How long a submission may sit waiting on its submitter before it goes dormant
+  # and its reserved lineage names are released back. Decided 2026-08-06.
+  #
+  # The names being released is the point of the timeout, not a side effect: an
+  # abandoned submission that silently holds a name forever is worse than having
+  # no reservation system, because the next person to sequence that lineage is
+  # told the name is taken by work that will never appear.
+  awaiting_submitter_timeout_days: 60
+  # How long a LIVE submission may sit with nothing happening to it before the
+  # promoter names it for a person to chase. Unlike the timeout above this
+  # applies no state change and releases no names -- it only reports -- because
+  # the states it covers (held after an unanswered objection, screening_failed
+  # and never revisited) are stuck on a curator or a maintainer, not on the
+  # submitter, and going dormant would punish the submitter for our silence.
+  #
+  # It exists because the 60-day timeout covers only awaiting_submitter, which
+  # leaves those states holding reserved lineage names with no clock at all.
+  stale_review_days: 30
+  # Registry of who may record a verdict. Kept in its own file because it is
+  # edited by a maintainer on a different schedule from everything else here.
+  curator_registry: config/curators.yml
+
+  # ---------------------------------------------------------------------------
+  # The curator verdict form, created 2026-08-06 by
+  # curation/apps_script/create_verdict_form.gs, owned by malaviadmin@gmail.com.
+  # Rebuild it by re-running that script rather than editing it by hand.
+  #
+  # Email collection is VERIFIED (confirmed in the script's execution log), so
+  # every response carries an address Google confirmed the responder controls.
+  # That is authentication; curator_registry above is authorization.
+  # ---------------------------------------------------------------------------
+  verdict_form_url: ""
+  verdict_form_edit: ""
+
+  # Entry ids for building prefilled links, so a curator never types either value.
+  # The revision matters as much as the id: it is what binds an approval to the
+  # version of the report the curator actually read.
+  verdict_form_entries:
+    submission_id: 1321287799
+    revision: 443144444
+
+  # WHERE VERDICTS LAND. **Access is deliberately unresolved — see the note in
+  # curation/apps_script/README.md.** Unlike the submission responses sheet, this
+  # one must NOT be shared with "anyone with the link": verdict reason text quotes
+  # what was wrong with somebody's unpublished data, and curator identities sit
+  # beside it. That means the fetch job cannot read it the credential-free way
+  # fetch_submissions.py reads the submission sheet, and how it does read it is a
+  # decision that has not been made yet.
+  verdict_sheet: ""
+
+  # The responses sheet is set to **GMT, no daylight saving (UTC+00:00)**, chosen
+  # 2026-08-06. DO NOT CHANGE IT. Google stamps each response in the spreadsheet's
+  # timezone and records no offset, so the zone is the only thing that makes a
+  # response time unambiguous -- and that time drives the 24h publish hold and the
+  # 60-day timeout. A DST-observing zone such as London would shift every summer
+  # timestamp by an hour with nothing to show for it in the data.
+  #
+  # verdicts.parse_row assumes UTC and takes the sheet's zone as a parameter, so
+  # if this ever does change, change it here too rather than letting the code and
+  # the sheet disagree silently.
+  verdict_sheet_timezone: "UTC"
+
+# -----------------------------------------------------------------------------
+# Read-only access to MalAvi's private Google Drive, for the fetch jobs.
+#
+# The sheets and upload folders stopped being link-shared on 2026-08-06, so a job
+# that reads them has to identify itself. Setup is one-time and documented in
+# curation/GOOGLE_ACCESS.md.
+#
+# The path must be OUTSIDE this repository -- google_auth.py refuses a key inside
+# it rather than trusting .gitignore, because a bearer credential in git history
+# is permanent. $MALAVI_GOOGLE_KEY overrides this value.
+# -----------------------------------------------------------------------------
+google:
+  service_account_key: ~/.config/malavi/service-account.json
+
+  # Curator report delivery (curation/publish_report.py).
+  #
+  # Not a service account, and it cannot be one: a service account has no Drive storage of
+  # its own, so a file it creates in a consumer account's folder is refused with
+  # 403 storageQuotaExceeded. Probed 2026-08-08 before the uploader was written. Delivery
+  # therefore goes to an Apps Script web app running as malaviadmin@gmail.com --
+  # curation/apps_script/publish_report.gs -- which writes the file as that human account.
+  #
+  # report_endpoint is the deployment's /exec URL. Empty until it is deployed; the CLI
+  # says so plainly rather than failing obscurely.
+  report_endpoint: ""
+  # The shared secret that signs each request. Outside the repository, and the code refuses
+  # a path inside it. Generate with `openssl rand -hex 32`; the same value goes in
+  # SHARED_SECRET in publish_report.gs.
+  report_secret_file: ~/.config/malavi/report_secret.txt
+
+# -----------------------------------------------------------------------------
+# Publication watcher (watcher/). Query terms mirror malaviTree's NCBI scan but
+# target PAPER-level hits (Europe PMC) for the curation queue, not mt genomes.
+# -----------------------------------------------------------------------------
+watcher:
+  # Which literature sources to query each run. All are open/keyless REST APIs;
+  # hits are merged across sources on a shared DOI-based de-dup key. Supported:
+  # europepmc (PubMed/MEDLINE + PMC + preprints + Agricola), openalex (broad
+  # cross-publisher index), crossref (DOI-level cross-publisher metadata).
+  sources: [europepmc, openalex, crossref]
+  # Europe PMC boolean query. Structured in two branches to control the noise that
+  # a bare "Plasmodium" term drags in (human/rodent/primate malaria):
+  #   1. The avian-specific taxa (haemosporidian, Haemoproteus, Leucocytozoon,
+  #      Parahaemoproteus, "avian malaria") come through freely — they are avian by
+  #      nature, and NOT gated on a molecular term, so morphology/prevalence-only
+  #      papers are still caught.
+  #   2. The broad "Plasmodium" term is gated: it must co-occur with avian OR vector
+  #      context (birds/passerines/... OR Culicoides/Simuliidae/Culex/mosquito) AND a
+  #      molecular marker (lineage/cytb/mtDNA), and is then filtered with NOT to
+  #      subtract human/primate/rodent-malaria species. The NOT applies ONLY to this
+  #      branch, so an avian Haemoproteus paper that merely mentions P. falciparum
+  #      comparatively is still kept via branch 1.
+  # Empirically (180-day window): cuts total hits ~319 -> ~204 and human/lab-malaria
+  # noise ~30 -> ~2 while INCREASING recall of genuine avian-haemosporidian papers.
+  europepmc_query: '(((haemosporidian OR haemosporidia OR Haemoproteus OR Leucocytozoon OR Parahaemoproteus OR "avian malaria") OR ((Plasmodium AND (bird OR birds OR avian OR passerine OR songbird OR nestling OR waterfowl OR raptor OR owl OR penguin OR poultry OR "wild bird" OR Culicoides OR "biting midge" OR Simuliidae OR blackfly OR "black fly" OR Culex OR mosquito) AND (lineage OR "cytochrome b" OR cytb OR mtDNA)) NOT (falciparum OR vivax OR ovale OR malariae OR knowlesi OR berghei OR chabaudi OR yoelii OR "human malaria" OR primate OR macaque OR rodent OR murine))))'
+  # Simpler keyword query for OpenAlex/Crossref, which rank by relevance rather
+  # than evaluate boolean logic. Space-separated terms, no operators.
+  keyword_query: 'haemosporidian avian lineage cytochrome b'
+  # Rank-only sources (Crossref) return relevance-ranked but UNfiltered results, so
+  # their top page is mostly journal front-matter/TOC noise. For those sources only,
+  # keep a hit only if its title contains one of these terms (case-insensitive
+  # substrings). Europe PMC (boolean, searches abstracts) and OpenAlex (full-text
+  # search) filter server-side and are left unfiltered, preserving recall for
+  # generically-titled papers.
+  relevance_filter_sources: [crossref]
+  relevance_terms: [haemospor, haemoproteus, plasmodium, leucocytozoon, "avian malaria", malaria, "blood parasite", parasit, "cytochrome b", cytb]
+  # How far back each scheduled run looks (days); de-duped against watcher/seen.json.
+  lookback_days: 14
+  # Where to send the batch: "issue" (open a GitHub issue) or "email" (SMTP).
+  delivery: issue
+  max_items_per_batch: 50
+
+# -----------------------------------------------------------------------------
+# External services linked (not hosted) from the website.
+# -----------------------------------------------------------------------------
+links:
+  blast_shiny: "https://811l41-vincenzo-ellis.shinyapps.io/MalAviBLAST/"
+  tree_project: "https://github.com/vincenzoaellis/malaviTree"
+  # Where the published site serves from. Used by ops/build_docs.py to turn a
+  # relative link in a source document into an absolute one for the standalone
+  # artifact copy, which is hosted elsewhere and cannot resolve site-relative
+  # paths. The site pages themselves keep the relative form.
+  site: "https://malavi-db.github.io/"
+
+# ---------------------------------------------------------------------------
+# This file was generated from the maintainer's config/project.yml by
+# publish/push_pipeline.sh. Every Drive folder id, sheet id, form edit URL and
+# deployment URL has been blanked. Copy it to config/project.yml and fill in
+# your own values; RUNBOOK.md says where each one comes from.
+# ---------------------------------------------------------------------------

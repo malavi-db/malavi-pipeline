@@ -1,0 +1,476 @@
+# @title Build a MalAvi release from the canonical record store
+# @purpose Regenerate the Grand Lineage Summary from the primary records, emit the five
+#          release tables and the cytochrome b alignment, and pack them into the
+#          MalAvi_<date>.zip that malaviR consumes.
+# @why Nothing produced a release. The store became authoritative when it was seeded, and
+#      until this existed there was no way to get a release back out of it.
+# @input data/records/*.csv
+# @input reference/country_regions.csv
+# @output MalAvi_<release>.zip (five .xlsx tables + one .fas alignment)
+# @output release_diff.json
+# @program python
+# @program openpyxl
+# @critical-var GRAND_LINEAGE_SUMMARY_COLUMNS
+# @critical-var RELEASE_TABLE_FILES
+# @critical-var FASTA_WRAP
+# @critical-var GENUS_PREFIXES
+"""Turn the record store back into a MalAvi release.
+
+``release_seed`` moved the database's home: the release ZIP used to be authoritative and
+the store was derived from it, and after seeding that is reversed. This is the other half
+of that move -- the store is the database, and a release is a **projection** of it, built
+fresh each time.
+
+**The Grand Lineage Summary is regenerated, never stored.** Its five tallies, its
+Passeriformes flag and its twelve region columns are all computable from the host and
+vector records, and computing them at build time is the only way they cannot drift out of
+agreement with the records they summarize. The 2026-03-23 release shows why that matters:
+measured against its own record tables, **248 lineages carry host records and no region
+flag at all**, and 266 have records supporting a region the summary does not flag, against
+only 25 where the summary flags a region the records do not support. That asymmetry is the
+signature of a summary that stopped being regenerated while records kept arriving under
+it. Rebuilding corrects all of it, and ``diff_against_release`` reports every correction
+rather than making it quietly.
+
+**Every derivation here was measured against the legacy release, not assumed.** Where a
+rule had more than one plausible reading, both were tried and the one that reproduces the
+legacy summary was kept: ``SUM_HOST`` counts distinct host binomials rather than rows,
+``SUM_VECTORS`` counts distinct vector species rather than rows, the Hawaii flag replaces
+NORTH_AMERICA rather than accompanying it, and the region flags read the vector table as
+well as the host table. That last one matters most -- 614 lineages have no host record at
+all, and reading hosts alone would silently strip the geography from every one of them.
+
+**What is emitted, and what is deliberately not.** The ZIP carries what the legacy release
+carried and what ``malaviR/data-raw/process_release.R`` reads: five ``.xlsx`` tables and
+one ``.fas`` alignment, in a folder named for the release, all stamped with the release
+date. The Table of Lineage Names is **not** among them, and that is correct rather than an
+omission -- MalAvi packs a paper's original names into the host table's ``ALT_NAME``
+column and the site unpacks them for browsing (``export/lib/tables.R``). It is a view,
+not a table, and the legacy ZIP never carried it either.
+
+**The alignment is data, not a rendering.** Every aligned sequence already lives in the
+store's ``lineages.SEQUENCE`` column, gapped, at the full 479 bp alignment width -- so the
+FASTA is written from the store rather than being carried alongside it. Verified against
+the 2026-03-23 release: 5,358 of the 5,363 lineages that have both a stored sequence and
+a FASTA record agree exactly, and the five that do not are a disagreement inside the
+legacy release itself, reported by the diff.
+"""
+from __future__ import annotations
+
+import csv
+import json
+import zipfile
+from collections import defaultdict
+from datetime import date
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+from .country_regions import (
+    REGION_COLUMNS, load_region_map, region_for, rows_needing_review, unmapped_countries,
+)
+from .release_store import TABLES, read_store, store_dir
+
+# The Grand Lineage Summary's columns, in the release's own order. The first five and the
+# last are primary facts copied from the store's lineages table; everything between them
+# is derived here.
+GRAND_LINEAGE_SUMMARY_COLUMNS: Tuple[str, ...] = (
+    "LINEAGE_NAME", "GENBANK_ACC", "SEQ_LENGTH", "GENUS_NAME", "SPECIES_NAME",
+    "SUM_VECTORS", "SUM_HOST", "SUM_GENUS", "SUM_FAMILY", "SUM_ORDER", "PASSERIFORMES",
+    *REGION_COLUMNS,
+    "SEQUENCE",
+)
+
+# Which store table becomes which file in the ZIP. The basenames are the legacy release's
+# and are matched by prefix in process_release.R, so they are not ours to restyle.
+RELEASE_TABLE_FILES: Dict[str, str] = {
+    "grand_lineage_summary": "GrandLineageSummary",
+    "host_records": "Hosts_and_Sites",
+    "morpho_species": "MorphoSpecies",
+    "references": "References",
+    "vector_records": "VectorData",
+}
+
+# The single worksheet name the legacy tables use. readxl takes the first sheet either
+# way, but matching it keeps a rebuilt release diffable against an archived one.
+SHEET_NAME = "sheet1"
+
+# Line width of the emitted FASTA, matching the legacy alignment.
+FASTA_WRAP = 60
+
+# The one-letter prefix each parasite genus contributes to an alignment tip label.
+GENUS_PREFIXES: Dict[str, str] = {
+    "Plasmodium": "P",
+    "Haemoproteus": "H",
+    "Leucocytozoon": "L",
+}
+
+# The tally columns that are written blank rather than "0" when they are zero, because
+# that is what the release does. PASSERIFORMES is not among them: it carries an explicit
+# "0", and the region columns carry a blank, and both of those are the release's habits
+# rather than anything meaningful.
+_BLANK_WHEN_ZERO = ("SUM_VECTORS", "SUM_HOST", "SUM_GENUS", "SUM_FAMILY", "SUM_ORDER")
+
+
+def _text(value: Any) -> str:
+    """A cell as a stripped string. ``None`` and missing are both the empty string."""
+    return (value or "").strip() if isinstance(value, str) else ("" if value is None
+                                                                 else str(value).strip())
+
+
+# ---------------------------------------------------------------------------
+# Deriving the Grand Lineage Summary
+# ---------------------------------------------------------------------------
+
+def derive_summary(store: Dict[str, List[Dict[str, Any]]],
+                   region_map: Optional[Dict[str, str]] = None
+                   ) -> List[Dict[str, str]]:
+    """Build the Grand Lineage Summary from the primary records.
+
+    One row per lineage, in the store's lineage order. Every derived value is recomputed;
+    nothing is carried over from any previous summary, because carrying values over is
+    precisely how the legacy summary went stale.
+    """
+    region_map = load_region_map() if region_map is None else region_map
+
+    # Index the records once. Both tables are read whole several times otherwise, and the
+    # host table is 18,000 rows.
+    hosts_by_lineage: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in store.get("host_records", []):
+        hosts_by_lineage[_text(row.get("LINEAGE_NAME"))].append(row)
+
+    vectors_by_lineage: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in store.get("vector_records", []):
+        vectors_by_lineage[_text(row.get("LINEAGE_NAME"))].append(row)
+
+    summary: List[Dict[str, str]] = []
+    for lineage in store.get("lineages", []):
+        name = _text(lineage.get("LINEAGE_NAME"))
+        hosts = hosts_by_lineage.get(name, [])
+        vectors = vectors_by_lineage.get(name, [])
+
+        # The tallies. Each counts *distinct* values, ignoring blanks -- a host record
+        # with no family recorded must not become a family of its own.
+        #
+        # SUM_HOST counts distinct host binomials rather than rows, because MalAvi records
+        # one lineage-in-one-host-at-one-site-by-one-study per row and the same host found
+        # by three studies is one host. SUM_VECTORS counts distinct vector species for the
+        # same reason; measured against the 2026-03-23 release, counting rows instead
+        # disagrees on 39 lineages and counting species disagrees on one.
+        binomials = {(_text(r.get("GENUS_NAME")), _text(r.get("SPECIES_NAME")))
+                     for r in hosts if _text(r.get("SPECIES_NAME"))}
+        genera = {_text(r.get("GENUS_NAME")) for r in hosts if _text(r.get("GENUS_NAME"))}
+        families = {_text(r.get("FAMILY_NAME")) for r in hosts if _text(r.get("FAMILY_NAME"))}
+        orders = {_text(r.get("ORDER_NAME")) for r in hosts if _text(r.get("ORDER_NAME"))}
+        vector_species = {_text(r.get("VECTOR_SPECIES")) for r in vectors
+                          if _text(r.get("VECTOR_SPECIES"))}
+
+        row: Dict[str, str] = {
+            # Primary facts, copied straight across.
+            "LINEAGE_NAME": name,
+            "GENBANK_ACC": _text(lineage.get("GENBANK_ACC")),
+            "SEQ_LENGTH": _text(lineage.get("SEQ_LENGTH")),
+            "GENUS_NAME": _text(lineage.get("GENUS_NAME")),
+            "SPECIES_NAME": _text(lineage.get("SPECIES_NAME")),
+            "SEQUENCE": _text(lineage.get("SEQUENCE")),
+            # Derived tallies.
+            "SUM_VECTORS": str(len(vector_species)),
+            "SUM_HOST": str(len(binomials)),
+            "SUM_GENUS": str(len(genera)),
+            "SUM_FAMILY": str(len(families)),
+            "SUM_ORDER": str(len(orders)),
+            # Derived flag. Always explicit, never blank.
+            "PASSERIFORMES": "1" if any(
+                _text(r.get("ORDER_NAME")).lower() == "passeriformes" for r in hosts) else "0",
+        }
+
+        # Blank rather than "0" for the tallies, matching the release.
+        for column in _BLANK_WHEN_ZERO:
+            if row[column] == "0":
+                row[column] = ""
+
+        # The region flags, from host records **and** vector records. A lineage known
+        # only from a mosquito still has a geography, and the legacy summary flags it:
+        # of the 614 lineages in the 2026-03-23 release with no host record at all, 173
+        # carry region flags, and deriving those from the vector table alone reproduces
+        # 602 of the 614 exactly. Reading host records only would strip a region from
+        # every one of them.
+        #
+        # Vector records carry no COUNTRY_REGION_NAME, so the Hawaii rule simply never
+        # fires for them; region_for handles the missing column rather than requiring one.
+        regions = set()
+        for record in list(hosts) + list(vectors):
+            region = region_for(_text(record.get("COUNTRY_NAME")),
+                                _text(record.get("COUNTRY_REGION_NAME")), region_map)
+            if region:
+                regions.add(region)
+        for column in REGION_COLUMNS:
+            row[column] = "1" if column in regions else ""
+
+        summary.append(row)
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# The alignment
+# ---------------------------------------------------------------------------
+
+def fasta_label(lineage: Dict[str, Any]) -> str:
+    """The alignment tip label for one lineage.
+
+    ``<prefix>_<LINEAGE>`` for a lineage with no morphospecies, and
+    ``<prefix>_<LINEAGE>_<GENUS>_<SPECIES>`` for one that has been linked to a described
+    species. A genus outside the three known ones contributes no prefix rather than a
+    guessed letter, so an unrecognized genus is visible in the output instead of being
+    silently filed under someone else's letter.
+    """
+    lineage_name = _text(lineage.get("LINEAGE_NAME"))
+    genus = _text(lineage.get("GENUS_NAME"))
+    species = _text(lineage.get("SPECIES_NAME"))
+    prefix = GENUS_PREFIXES.get(genus)
+    label = f"{prefix}_{lineage_name}" if prefix else lineage_name
+    if species:
+        label = f"{label}_{genus}_{species}"
+    return label
+
+
+def build_fasta(lineages: Sequence[Dict[str, Any]], wrap: int = FASTA_WRAP) -> str:
+    """The aligned FASTA for a release.
+
+    Lineages with no stored sequence are omitted rather than written as an empty record:
+    an alignment row of nothing is not a missing sequence, it is a sequence of gaps, and
+    a downstream aligner cannot tell the difference.
+    """
+    out: List[str] = []
+    for lineage in lineages:
+        sequence = _text(lineage.get("SEQUENCE"))
+        if not sequence:
+            continue
+        out.append(f">{fasta_label(lineage)}")
+        for start in range(0, len(sequence), wrap):
+            out.append(sequence[start:start + wrap])
+    return "\n".join(out) + ("\n" if out else "")
+
+
+# ---------------------------------------------------------------------------
+# Emitting the release
+# ---------------------------------------------------------------------------
+
+def write_xlsx(path: Path, columns: Sequence[str],
+               rows: Iterable[Dict[str, Any]]) -> Path:
+    """Write one release table as .xlsx.
+
+    Every cell is written as text, and an empty value is written as a genuinely empty cell
+    rather than an empty string, because that is what the legacy tables contain and what
+    readxl turns into NA. Writing "" instead would give malaviR a zero-length string that
+    is not NA, and every downstream ``is.na()`` would quietly stop matching.
+    """
+    # Imported here rather than at module scope so that importing this module -- which the
+    # tests and the diff path do -- does not require openpyxl to be installed.
+    import openpyxl
+
+    workbook = openpyxl.Workbook(write_only=True)
+    sheet = workbook.create_sheet(title=SHEET_NAME)
+    sheet.append(list(columns))
+    for row in rows:
+        sheet.append([(_text(row.get(column)) or None) for column in columns])
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(str(path))
+    return path
+
+
+def build_release(store: Dict[str, List[Dict[str, Any]]], release: str,
+                  destination: Path,
+                  region_map: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """Build the release ZIP, and report what went into it.
+
+    ``destination`` receives ``MalAvi_<release>.zip``. The staged folder inside the ZIP is
+    named for the release, exactly as the legacy archives are, because process_release.R
+    unzips into a temporary directory and globs for its five tables by prefix.
+    """
+    region_map = load_region_map() if region_map is None else region_map
+    destination = Path(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+
+    summary = derive_summary(store, region_map)
+    tables = {
+        "grand_lineage_summary": (GRAND_LINEAGE_SUMMARY_COLUMNS, summary),
+        "host_records": (TABLES["host_records"].columns, store.get("host_records", [])),
+        "morpho_species": (TABLES["morpho_species"].columns, store.get("morpho_species", [])),
+        "references": (TABLES["references"].columns, store.get("references", [])),
+        "vector_records": (TABLES["vector_records"].columns, store.get("vector_records", [])),
+    }
+
+    folder = destination / f"MalAvi_{release}"
+    folder.mkdir(parents=True, exist_ok=True)
+    staged: List[Path] = []
+    for name, (columns, rows) in tables.items():
+        # Provenance columns are dropped here, by projecting onto the release's own
+        # columns. RECORD_ID, _source and _added are how the store answers "why is this
+        # row here"; the release format is Staffan's and does not carry them.
+        staged.append(write_xlsx(folder / f"{RELEASE_TABLE_FILES[name]}_{release}.xlsx",
+                                 columns, rows))
+
+    lineages = store.get("lineages", [])
+    fasta = build_fasta(lineages)
+    alignment = folder / f"MalAvi_{release}.fas"
+    alignment.write_text(fasta, encoding="utf-8")
+    staged.append(alignment)
+
+    archive = destination / f"MalAvi_{release}.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        for path in sorted(staged):
+            bundle.write(path, arcname=f"MalAvi_{release}/{path.name}")
+
+    # Anything that would make the release wrong in a way nobody would notice.
+    hosts = store.get("host_records", [])
+    warnings: List[str] = []
+    missing = unmapped_countries(hosts, region_map)
+    if missing:
+        warnings.append(
+            f"{len(missing)} country name(s) in the host records are not in "
+            f"reference/country_regions.csv, so their records set no region: "
+            f"{', '.join(sorted(missing))}")
+    review = rows_needing_review()
+    if review:
+        warnings.append(
+            f"{len(review)} row(s) in reference/country_regions.csv are still flagged "
+            f"for curator review: "
+            f"{', '.join(r['COUNTRY_NAME'] for r in review)}")
+    no_sequence = sorted(_text(r.get("LINEAGE_NAME")) for r in lineages
+                         if not _text(r.get("SEQUENCE")))
+    if no_sequence:
+        warnings.append(
+            f"{len(no_sequence)} lineage(s) have no sequence and are absent from the "
+            f"alignment: {', '.join(no_sequence)}")
+
+    # A lineage name appearing twice. MalAvi's 2026-03-23 release already contains one
+    # (TUPHI01, the same accession under two species assignments), so this reports rather
+    # than refuses -- but it must be reported, because a summary with a repeated
+    # LINEAGE_NAME breaks any downstream join that treats the name as a key.
+    name_counts: Dict[str, int] = defaultdict(int)
+    for row in lineages:
+        name_counts[_text(row.get("LINEAGE_NAME"))] += 1
+    repeated = sorted(name for name, count in name_counts.items() if count > 1)
+    if repeated:
+        warnings.append(
+            f"{len(repeated)} lineage name(s) appear more than once in the store, so the "
+            f"summary carries duplicate rows: {', '.join(repeated)}")
+
+    # Two sequences under one tip label would be silently dropped or renamed by whatever
+    # reads the alignment, so this is checked separately from the name above: distinct
+    # lineages can collide on a label, and identical names can produce distinct labels.
+    label_counts: Dict[str, int] = defaultdict(int)
+    for row in lineages:
+        if _text(row.get("SEQUENCE")):
+            label_counts[fasta_label(row)] += 1
+    duplicate_labels = sorted(label for label, count in label_counts.items() if count > 1)
+    if duplicate_labels:
+        warnings.append(
+            f"{len(duplicate_labels)} alignment tip label(s) are not unique, and a reader "
+            f"will drop or rename the duplicates: {', '.join(duplicate_labels)}")
+
+    # An alignment whose rows are not all the same width is not an alignment. The store
+    # holds gapped sequences at a fixed width (479 bp in the seeded release), so more than
+    # one width means a sequence was inserted ungapped or against a different reference.
+    widths = sorted({len(_text(r.get("SEQUENCE"))) for r in lineages
+                     if _text(r.get("SEQUENCE"))})
+    if len(widths) > 1:
+        warnings.append(
+            f"the alignment is ragged: sequences occur at {len(widths)} different widths "
+            f"({', '.join(str(w) for w in widths[:10])}). Every stored sequence should be "
+            f"gapped to the same alignment width.")
+
+    return {
+        "release": release,
+        "archive": str(archive),
+        "folder": str(folder),
+        "files": [p.name for p in staged],
+        "rows": {name: len(rows) for name, (_, rows) in tables.items()},
+        # Records actually written, not distinct labels: if the two ever differ the
+        # duplicate-label warning above says so, and this should still report the file.
+        "alignment_records": sum(label_counts.values()),
+        "alignment_width": widths[0] if len(widths) == 1 else None,
+        "unmapped_countries": missing,
+        "warnings": warnings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Checking a build against the release it supersedes
+# ---------------------------------------------------------------------------
+
+def _read_csv(path: Path) -> List[Dict[str, str]]:
+    with open(path, newline="", encoding="utf-8-sig") as handle:
+        return [dict(row) for row in csv.DictReader(handle)]
+
+
+def diff_against_release(summary: Sequence[Dict[str, str]], reference_csv: Path
+                         ) -> Dict[str, Any]:
+    """Compare a regenerated Grand Lineage Summary against a previous release's.
+
+    Every difference here is a derived value the rebuild has changed, so this is the
+    report a curator signs off on before a release ships. It is deliberately per-column
+    and per-lineage: "290 lineages differ" is not reviewable, "these 248 gained a region
+    flag their records already supported" is.
+
+    Lineages present in only one of the two are reported separately, because a release
+    that adds or retires lineages is normal and should not be read as 5,000 changes.
+    """
+    reference = {row["LINEAGE_NAME"]: row for row in _read_csv(Path(reference_csv))}
+    built = {row["LINEAGE_NAME"]: row for row in summary}
+
+    derived_columns = [column for column in GRAND_LINEAGE_SUMMARY_COLUMNS
+                       if column not in ("LINEAGE_NAME", "GENBANK_ACC", "SEQ_LENGTH",
+                                         "GENUS_NAME", "SPECIES_NAME", "SEQUENCE")]
+
+    changes: Dict[str, List[Dict[str, str]]] = {column: [] for column in derived_columns}
+    for name in sorted(set(built) & set(reference)):
+        for column in derived_columns:
+            was = _text(reference[name].get(column))
+            now = _text(built[name].get(column))
+            if was != now:
+                changes[column].append({"lineage": name, "was": was, "now": now})
+
+    changed_lineages = {change["lineage"]
+                        for column in changes for change in changes[column]}
+    return {
+        "reference": str(reference_csv),
+        "lineages_compared": len(set(built) & set(reference)),
+        "only_in_build": sorted(set(built) - set(reference)),
+        "only_in_reference": sorted(set(reference) - set(built)),
+        "changed_lineages": len(changed_lineages),
+        "by_column": {column: {
+            "changed": len(entries),
+            # Capped because the whole point is a reviewable report; the counts above are
+            # complete and the full list is reproducible by re-running the build.
+            "examples": entries[:20],
+        } for column, entries in changes.items() if entries},
+    }
+
+
+def build_from_repository(release: Optional[str] = None,
+                          destination: Optional[Path] = None,
+                          reference_csv: Optional[Path] = None,
+                          root: Optional[Path] = None) -> Dict[str, Any]:
+    """Build a release from the repository's own store, and diff it if asked.
+
+    ``release`` defaults to today, which is how MalAvi has always stamped a release.
+    """
+    from .config import repo_root as _repo_root
+    root = Path(root) if root else _repo_root()
+    release = release or date.today().isoformat()
+    destination = Path(destination) if destination else root / "data" / "releases"
+
+    store = read_store(store_dir(root))
+    if not any(store.values()):
+        raise ValueError(
+            f"{store_dir(root)} holds no records. Seed the store before building a "
+            f"release (RUNBOOK step 3b).")
+
+    report = build_release(store, release, destination)
+    if reference_csv:
+        report["diff"] = diff_against_release(derive_summary(store), Path(reference_csv))
+    (destination / f"release_report_{release}.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report

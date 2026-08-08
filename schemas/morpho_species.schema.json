@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "malavi/morpho_species.schema.json",
+  "title": "MalAvi Morpho Species Summary record",
+  "description": "Lineage linked to a morphologically described parasite species. Authoritative columns as of malaviR release 2026-03-23 (5 columns).",
+  "type": "object",
+  "properties": {
+    "LINEAGE_NAME":       { "type": "string", "description": "MalAvi parasite lineage code." },
+    "GENUS_NAME":         { "type": ["string", "null"], "description": "Parasite genus." },
+    "SPECIES_NAME":       { "type": ["string", "null"], "description": "Morphologically described species epithet." },
+    "REFERENCE_NAME":     { "type": ["string", "null"], "description": "Citation key for the morphological link." },
+    "MORPHOLOGY_COMMENT": { "type": ["string", "null"], "description": "Free-text note on the morphological identification." }
+  },
+  "required": ["LINEAGE_NAME"],
+  "additionalProperties": false
+}

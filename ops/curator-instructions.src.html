@@ -1,0 +1,251 @@
+<title>Curating for MalAvi</title>
+
+<!-- INCLUDE:STYLE -->
+
+<style>
+/* Curator-specific: the screenshot slots and the drawn form. */
+.guide .shot{margin:24px 0 0; border:2px dashed var(--rule); border-radius:var(--radius);
+  background:var(--surface-2); padding:36px 24px; text-align:center}
+.guide .shot .lab{font-size:12px; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--ink-3); font-weight:700}
+.guide .shot .what{margin:10px auto 0; max-width:52ch; font-size:14px; color:var(--ink-2)}
+.guide .steps{counter-reset:s; list-style:none; padding:0; margin:28px 0 0;
+  display:flex; flex-direction:column; gap:14px; max-width:var(--measure)}
+.guide .steps li{counter-increment:s; position:relative; padding-left:44px;
+  color:var(--ink-2)}
+.guide .steps li::before{content:counter(s); position:absolute; left:0; top:-2px;
+  width:28px; height:28px; border-radius:50%; background:var(--accent-wash);
+  color:var(--accent); font-weight:700; font-size:13px; display:grid; place-items:center}
+.guide .steps strong{color:var(--ink)}
+.guide .verdict-row{display:grid; gap:14px; margin-top:28px}
+@media(min-width:820px){ .guide .verdict-row{grid-template-columns:repeat(3,1fr)} }
+.guide .vcard{border:1px solid var(--rule); border-radius:var(--radius); padding:18px 20px;
+  background:var(--surface)}
+.guide .vcard h3{margin-bottom:6px}
+.guide .vcard p{font-size:14.5px; color:var(--ink-2); margin:0}
+.guide .vcard .after{margin-top:12px; padding-top:10px;
+  border-top:1px solid var(--rule-soft); font-size:13px; color:var(--ink-3)}
+.guide .vcard.ok{border-left:4px solid var(--ok)}
+.guide .vcard.stop{border-left:4px solid var(--stop)}
+.guide .vcard.warn{border-left:4px solid var(--warn)}
+.guide .never{display:grid; gap:10px; margin-top:24px; max-width:var(--measure)}
+.guide .never div{padding:12px 16px; border-radius:var(--radius);
+  background:var(--surface-2); color:var(--ink-2); font-size:15px}
+/* Screenshots are light-background whatever the page theme, so they get a plain white
+   mat rather than a transparent one that would glow oddly in dark mode. */
+.guide figure.screenshot{background:#fff; padding:16px}
+.guide figure.screenshot img{display:block; width:100%; height:auto; border-radius:4px}
+.guide figure.screenshot figcaption{color:#5b6675; margin-top:14px}
+</style>
+
+<!-- GUIDE:CONTENT-START -->
+<div class="guide">
+
+<header class="hero">
+  <p class="eyebrow">MalAvi &middot; for curators</p>
+  <h1>A guide to<br>curating MalAvi</h1>
+  <div class="lede">
+    <p>When data are submitted through the standard template, you will get an email with a pdf report. You read the report and evaluate the submission and then you click a link in the pdf that takes you to a Google form (autofilled with the submission info) where you record your decision ("Accept", "Flag", or "Reject"; the latter two require written explanations).</p>
+    <p>If someone deposits a PDF in the system without a data template filled out, you will still receive an email but no PDF report. The email will prompt you to extract the data yourself, fill in a submission template, and submit it yourself. I have a program that can try to extract data from the paper, but it doesn't work for most papers because host-parasite associations are often not reported as tables, or there is extra info that is hard to capture for some other reason.</p>
+  </div>
+</header>
+
+<section>
+  <div class="sec-head"><h2>A diagram of the process</h2></div>
+
+  <figure>
+    <svg viewBox="0 0 940 330" role="img"
+         aria-label="Two ways in. A data template is checked and a report generated, which the curator receives by email and acts on. A PDF with no template also emails the curator, who extracts the data and submits it as a new template.">
+      <defs>
+        <marker id="c1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7"
+                markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g font-size="12" fill="currentColor" stroke="none">
+
+        <rect x="14" y="18" width="196" height="98" rx="8" fill="none" stroke="currentColor"/>
+        <text x="112" y="56" text-anchor="middle" font-weight="700">A data template file</text>
+        <text x="112" y="76" text-anchor="middle" font-weight="700">submitted by a user</text>
+
+        <line x1="210" y1="67" x2="248" y2="67" stroke="currentColor" marker-end="url(#c1)"/>
+
+        <rect x="252" y="18" width="196" height="98" rx="8" fill="none" stroke="currentColor"/>
+        <text x="350" y="56" text-anchor="middle" font-weight="700">Submission is checked</text>
+        <text x="350" y="76" text-anchor="middle" font-weight="700">and a report generated</text>
+
+        <line x1="448" y1="67" x2="486" y2="67" stroke="currentColor" marker-end="url(#c1)"/>
+
+        <rect x="490" y="18" width="196" height="98" rx="8"
+              fill="var(--accent-wash)" stroke="var(--accent)"/>
+        <text x="588" y="48" text-anchor="middle" font-weight="700">Curator receives the</text>
+        <text x="588" y="68" text-anchor="middle" font-weight="700">report for review</text>
+        <text x="588" y="88" text-anchor="middle" font-weight="700">by email</text>
+
+        <line x1="686" y1="67" x2="724" y2="67" stroke="currentColor" marker-end="url(#c1)"/>
+
+        <rect x="728" y="18" width="198" height="98" rx="8"
+              fill="none" stroke="var(--accent)" stroke-width="2"/>
+        <text x="827" y="48" text-anchor="middle" font-weight="700">Curator clicks the link</text>
+        <text x="827" y="68" text-anchor="middle" font-weight="700">in the report and</text>
+        <text x="827" y="88" text-anchor="middle" font-weight="700">records a decision</text>
+
+        <!-- The second way in: a paper with no template. -->
+        <rect x="14" y="204" width="196" height="98" rx="8" fill="none"
+              stroke="currentColor" stroke-dasharray="5 4"/>
+        <text x="112" y="242" text-anchor="middle" font-weight="700">A PDF submitted with</text>
+        <text x="112" y="262" text-anchor="middle" font-weight="700">no data template</text>
+
+        <line x1="210" y1="253" x2="248" y2="253" stroke="currentColor" marker-end="url(#c1)"/>
+
+        <rect x="252" y="204" width="196" height="98" rx="8" fill="none" stroke="currentColor"/>
+        <text x="350" y="242" text-anchor="middle" font-weight="700">Curator receives an</text>
+        <text x="350" y="262" text-anchor="middle" font-weight="700">email, but no report</text>
+
+        <line x1="448" y1="253" x2="486" y2="253" stroke="currentColor" marker-end="url(#c1)"/>
+
+        <rect x="490" y="204" width="196" height="98" rx="8" fill="none" stroke="currentColor"/>
+        <text x="588" y="232" text-anchor="middle" font-weight="700">Curator reads the paper</text>
+        <text x="588" y="252" text-anchor="middle" font-weight="700">and fills in a data</text>
+        <text x="588" y="272" text-anchor="middle" font-weight="700">template</text>
+
+        <!-- and it rejoins the top row as an ordinary submission -->
+        <path d="M588,204 C588,170 350,170 350,124" fill="none" stroke="currentColor"
+              stroke-dasharray="5 4" marker-end="url(#c1)"/>
+        <text x="470" y="163" text-anchor="middle" font-size="11">submitted like any other</text>
+      </g>
+    </svg>
+
+  </figure>
+</section>
+
+<section>
+  <div class="sec-head"><h2>The emailed report</h2>
+    <span class="pill live">Live</span></div>
+  <p>
+    When someone submits the data template file, a report is generated and it comes to you
+    as an email from &ldquo;malaviadmin@gmail.com&rdquo;. The report goes through several
+    dozen automatic checks of the novel sequences, the proposed names of new lineages, and
+    the host and geographic data. But these are just some basic checks, you
+    <strong>still need to review</strong>.
+  </p>
+  <p>
+    In case someone tries to reserve a lineage name that is wrong for some reason (e.g.,
+    already taken), the report will propose the next available name. If you accept the
+    submission, you are also approving the suggested name (unless you flag it with a
+    comment).
+  </p>
+  <p>
+    When you click the button in the report to make a decision, it will link to a Google
+    forms doc that has all the submission info pre-filled out, and you will just have to
+    answer a few questions.
+  </p>
+
+  <div class="note">
+    <p><strong>Add <code>malaviadmin@gmail.com</code> to your contacts because that's the account sending the emails.</strong> The email is an ordinary Google account and it seems to be delayed getting to my university address, but it does work.</p>
+  </div>
+
+  <figure class="screenshot">
+    <img src="data:image/png;base64,__EMAIL_NOTIFICATION__" alt="The MalAvi notification
+      email: who submitted, their institution and country, whether the data is published,
+      what they are sending, how many files, their notes, a statement that the automated
+      checks have not run yet, and a link to record a verdict.">
+    <figcaption>
+      A real notification, from 2026-08-06 (testing phase). The link it shows looks strange because my university's email service rewrites links, presumably for security reasons.
+    </figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="sec-head"><h2>Reading the report</h2>
+    <span class="pill live">Live</span></div>
+  <p>
+    The report is a PDF that opens in the browser. Here is <a href="assets/downloads/example-curator-report.pdf">an example report built from fake data</a> to explore.
+  </p>
+
+  <div class="files" style="margin-top:12px">
+    <a href="assets/downloads/example-curator-report.pdf" target="_blank" rel="noopener"><span class="nm">Example curator report</span><span class="ds">A full report built from fake data, so you can see what you will be sent before you are sent one.</span><span class="fm">PDF</span></a>
+  </div>
+
+  <figure class="screenshot">
+    <img src="data:image/png;base64,__REPORT_CHECKS__" alt="Four checks from a real report.
+      Two are marked blocking: a proposed name that MalAvi already has, and a sequence
+      identical to an existing lineage. One is a warning about sequence quality. One is
+      information about host and geography.">
+  </figure>
+</section>
+
+<section>
+  <div class="sec-head"><h2>Recording your decision</h2>
+    <span class="pill live">Live</span></div>
+  <p>
+    Click the link in the report and it takes you to a short form to fill out. Should be easy.
+  </p>
+
+  
+  <figure class="screenshot">
+    <img src="data:image/png;base64,__REPORT_VERDICT__" alt="The verdict block at the top
+      of a report: the submission identifier and revision number, and a button reading
+      Record your verdict on this submission.">
+  </figure>
+
+  <p>The three options you will be choosing:</p>
+
+  <div class="verdict-row">
+    <div class="vcard ok">
+      <h3>Accept</h3>
+      <p>This can go into the next release, as-is.</p>
+      <div class="after">Waits 24 hours before anything happens, so another curator can also evaluate, if necessary.</div>
+    </div>
+    <div class="vcard warn">
+      <h3>Flag for further review</h3>
+      <p>Choose this option if some part of the submission needs correcting or you
+        are unsure about something and want another curator to review as well.</p>
+      <div class="after">Blocks the submission until the curators can resolve it.</div>
+    </div>
+    <div class="vcard stop">
+      <h3>Reject</h3>
+      <p>This should not be in MalAvi at all (any number of reasons could lead to this outcome; but we can contact the author if they submitted the data themselves for clarification).</p>
+      <div class="after">The lead curator can still overrule the decision after discussion with the curators.</div>
+    </div>
+  </div>
+
+</section>
+
+<section>
+  <div class="sec-head"><h2>When something is wrong with a submission</h2>
+    <span class="pill live">Live</span></div>
+  <p>
+    If you want to make a correction, you must also flag the submission. In other words, a
+    correction can't be made AND have the submission accepted at the same time.
+  </p>
+
+  <p>Here's the breakdown of what a correction would look like:</p>
+
+  <ol class="steps">
+    <li>Flag the submission, and explain what's wrong and how it should be fixed.</li>
+    <li>The lead curator has to approve after discussing with you and potentially the
+      author who submitted the data. No correction is applied without that approval, and a
+      lead cannot approve their own.</li>
+    <li>The maintainer runs a program that applies the agreed upon changes.</li>
+    <li>The corrected submission gets sent out with a new report (and a revision number) to
+      you and the other curators for approval.</li>
+  </ol>
+
+</section>
+
+<section>
+  <div class="note">
+    <p><strong>If a submission is unpublished work, it stays private.</strong> The public
+    queue shows a claimed lineage name and the date it was claimed, and nothing else. A submission of unpublished work can be
+    approved and hold its lineage name reservations indefinitely (i.e., until the authors
+    publish their work and provide the additional data and publication).</p>
+  </div>
+</section>
+
+<footer>
+  <p>V. Ellis, note to curators 2026-08-06.</p>
+</footer>
+
+</div>
+<!-- GUIDE:CONTENT-END -->

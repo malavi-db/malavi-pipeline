@@ -1,0 +1,303 @@
+<title>How MalAvi works now</title>
+
+<!-- INCLUDE:STYLE -->
+
+<!-- GUIDE:CONTENT-START -->
+<div class="guide">
+
+<header class="hero">
+  <p class="eyebrow">MalAvi &middot; orientation</p>
+  <h1>How MalAvi<br>works after the update</h1>
+  <div class="lede">
+    <p>This document describes the changes in the rebuild of MalAvi. It will show you how the rebuild works in sort of broad strokes. Briefly, there's a new static website with a submission button, curators review the submissions and can add papers themselves, approved submissions get queued up for the next build.</p>
+    <p>I also describe the other connected products, there's the new website of course, but also the R package malaviR, and there's a shinyapp BLAST tool (although I might replace that with something else in the near future).</p>
+  </div>
+</header>
+
+<section>
+  <div class="sec-head"><h2>Two ways data arrive</h2></div>
+  <p>
+    New data are incorporated in two ways. Either someone submits new data (the submission form and/or a manuscript), or a curator finds the data in a published paper and
+    submits the data themselves. Once the data are submitted to our pipeline they will get the same checks.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 900 584" role="img"
+         aria-label="Two intake paths and automated screen pipeline.">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7"
+                markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g font-size="12" fill="currentColor" stroke="none">
+
+        <!-- Line A -->
+        <text x="60" y="24" font-size="11" font-weight="700" letter-spacing="1.2">SOMEONE SUBMITS</text>
+        <rect x="56" y="34" width="336" height="76" rx="8" fill="none" stroke="currentColor"/>
+        <text x="224" y="64" text-anchor="middle">Filled-in template (the excel submission file)</text>
+        <text x="224" y="88" text-anchor="middle">+ paper, if published</text>
+
+        <!-- Line B -->
+        <text x="512" y="24" font-size="11" font-weight="700" letter-spacing="1.2">A CURATOR FINDS A PAPER</text>
+        <rect x="508" y="34" width="336" height="76" rx="8" fill="none" stroke="currentColor"/>
+        <text x="676" y="64" text-anchor="middle">PDF and its</text>
+        <text x="676" y="88" text-anchor="middle">supplementary tables</text>
+
+        <line x1="224" y1="110" x2="224" y2="186" stroke="currentColor" marker-end="url(#a1)"/>
+        <text x="236" y="140" font-size="11">web form (linked on new MalAvi site)</text>
+
+        <line x1="676" y1="110" x2="676" y2="186" stroke="currentColor" marker-end="url(#a1)"/>
+        <text x="664" y="158" font-size="11" text-anchor="end">extraction (some programming help possible,</text>
+        <text x="664" y="174" font-size="11" text-anchor="end">but will still be mostly manual)</text>
+
+        <!-- The screen -->
+        <rect x="56" y="192" width="788" height="98" rx="8"
+              fill="var(--accent-wash)" stroke="var(--accent)"/>
+        <text x="450" y="222" text-anchor="middle" font-weight="700">Automated checks once data are submitted</text>
+        <text x="450" y="252" text-anchor="middle" font-size="11">Is this name taken? Is this sequence already a named lineage? Any strange sequence</text>
+        <text x="450" y="272" text-anchor="middle" font-size="11">patterns or strange geographic or host distribution patterns?</text>
+
+        <line x1="450" y1="290" x2="450" y2="332" stroke="currentColor" marker-end="url(#a1)"/>
+
+        <!-- Queue -->
+        <rect x="56" y="338" width="788" height="92" rx="8" fill="none" stroke="currentColor"/>
+        <text x="450" y="370" text-anchor="middle" font-weight="700">One queue (visible on the website)</text>
+        <text x="450" y="398" text-anchor="middle" font-size="11">The queue is monitored so that name reservations are preserved by order of submission</text>
+
+        <line x1="450" y1="430" x2="450" y2="472" stroke="currentColor" marker-end="url(#a1)"/>
+        <text x="462" y="456" font-size="11">the curators</text>
+
+        <!-- Decision -->
+        <rect x="56" y="478" width="788" height="86" rx="8"
+              fill="none" stroke="var(--accent)" stroke-width="2"/>
+        <text x="450" y="510" text-anchor="middle" font-weight="700">Decision</text>
+        <text x="450" y="538" text-anchor="middle" font-size="11">See next section for details.</text>
+      </g>
+    </svg>
+    <figcaption>
+      Nothing is
+      written to the database without the curators' approval.
+    </figcaption>
+  </figure>
+
+  <div class="note">
+    <p>
+      <strong>The software underlying the pipeline is deterministic everywhere (not AI).</strong> There's no risk of AI hallucinated data getting into the database.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><h2>How a curator decision is made</h2>
+    <span class="pill live">Form is live</span></div>
+  <p>
+    When a submission happens, the curators are emailed a report (with the data quality checks). At least one curator must read the report and record one of three answers ("Accept", "Flag", "Reject"). The rule that
+    matters most is what happens when two curators disagree: an objection outranks an
+    approval. Currently, I've put a 24 hour period after one curator approves before the submission is accepted (that time window can change...probably should be bigger). During that window,
+    another curator can review and either accept as well or flag or reject (again the latter two choices will stop the submission going forward). Curators must discuss among each other any flagged or rejected submission before it can be resurrected and submitted again. Only one curator (currently set as V. Ellis) has the authority to override the flagged or rejected setting.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 1140 620" role="img"
+         aria-label="A curator chooses accept, flag, or reject for a submission. A flag blocks the submission and only a lead curator can clear it. An accepted submission waits 24 hours, during which a late flag still stops it.">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7"
+                markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+        <marker id="a2s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7"
+                markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--stop)"/>
+        </marker>
+      </defs>
+      <g font-size="12" fill="currentColor" stroke="none">
+
+        <rect x="20" y="256" width="216" height="128" rx="8" fill="none" stroke="currentColor"/>
+        <text x="128" y="288" text-anchor="middle" font-weight="700">Report generated</text>
+        <text x="128" y="306" text-anchor="middle" font-weight="700">from a submission</text>
+        <text x="128" y="332" text-anchor="middle" font-size="11">Curators receive the report</text>
+        <text x="128" y="348" text-anchor="middle" font-size="11">in an email and one click</text>
+        <text x="128" y="364" text-anchor="middle" font-size="11">to review.</text>
+
+        <line x1="236" y1="320" x2="352" y2="320" stroke="currentColor" marker-end="url(#a2)"/>
+        <text x="294" y="296" text-anchor="middle" font-size="11">Curator reads the report</text>
+        <text x="294" y="310" text-anchor="middle" font-size="11">and data submission</text>
+
+        <rect x="356" y="280" width="208" height="80" rx="8"
+              fill="var(--accent-wash)" stroke="var(--accent)"/>
+        <text x="460" y="312" text-anchor="middle" font-weight="700">Curator</text>
+        <text x="460" y="336" text-anchor="middle" font-size="11">picks accept, flag, or reject</text>
+
+        <!-- Accept -->
+        <path d="M564,300 C610,300 620,116 664,116" fill="none" stroke="var(--ok)"
+              marker-end="url(#a2)"/>
+        <text x="614" y="146" text-anchor="middle" font-size="11" fill="var(--ok)">Accept</text>
+        <rect x="668" y="76" width="232" height="80" rx="8" fill="var(--ok-wash)"
+              stroke="var(--ok)"/>
+        <text x="784" y="108" text-anchor="middle" font-weight="700">Waits 24 hours</text>
+        <text x="784" y="132" text-anchor="middle" font-size="11">in case other curators want to look</text>
+
+        <line x1="900" y1="116" x2="944" y2="116" stroke="var(--ok)" marker-end="url(#a2)"/>
+        <rect x="948" y="76" width="176" height="80" rx="8" fill="none" stroke="var(--ok)"
+              stroke-width="2"/>
+        <text x="1036" y="112" text-anchor="middle" font-weight="700">Into the next</text>
+        <text x="1036" y="132" text-anchor="middle" font-weight="700">release</text>
+
+        <!-- Flag -->
+        <path d="M564,326 C610,326 620,336 664,336" fill="none" stroke="var(--stop)"
+              marker-end="url(#a2s)"/>
+        <text x="614" y="358" text-anchor="middle" font-size="11" fill="var(--stop)">Flag</text>
+        <rect x="668" y="296" width="232" height="80" rx="8" fill="var(--stop-wash)"
+              stroke="var(--stop)"/>
+        <text x="784" y="328" text-anchor="middle" font-weight="700" fill="var(--stop)">Blocked</text>
+        <text x="784" y="352" text-anchor="middle" font-size="11">written reason required from curator</text>
+
+        <!-- A flag during the window stops the release -->
+        <path d="M784,296 L784,164" fill="none" stroke="var(--stop)" stroke-dasharray="5 4"
+              marker-end="url(#a2s)"/>
+        <text x="796" y="222" font-size="11" fill="var(--stop)">a flag during those</text>
+        <text x="796" y="238" font-size="11" fill="var(--stop)">24 hours from a second</text>
+        <text x="796" y="254" font-size="11" fill="var(--stop)">curator stops it</text>
+
+        <!-- Lead clears -->
+        <line x1="900" y1="336" x2="944" y2="336" stroke="currentColor" marker-end="url(#a2)"/>
+        <rect x="948" y="290" width="176" height="120" rx="8" fill="none" stroke="currentColor"/>
+        <text x="1036" y="318" text-anchor="middle" font-weight="700">Lead curator</text>
+        <text x="1036" y="342" text-anchor="middle" font-size="11">clears the flag (leading to</text>
+        <text x="1036" y="358" text-anchor="middle" font-size="11">acceptance or rejection), and</text>
+        <text x="1036" y="374" text-anchor="middle" font-size="11">records the decision</text>
+        <text x="1036" y="390" text-anchor="middle" font-size="11">and justification</text>
+
+        <!-- Reject -->
+        <path d="M564,352 C606,352 616,502 660,502" fill="none" stroke="currentColor"
+              marker-end="url(#a2)"/>
+        <text x="612" y="486" text-anchor="middle" font-size="11">Reject</text>
+        <rect x="664" y="446" width="380" height="118" rx="8" fill="none" stroke="currentColor"/>
+        <text x="854" y="476" text-anchor="middle" font-weight="700">Not included</text>
+        <text x="854" y="502" text-anchor="middle" font-size="11">written reason required by curator (lead curator can still</text>
+        <text x="854" y="520" text-anchor="middle" font-size="11">overrule in case of a discrepancy, one reject and one</text>
+        <text x="854" y="538" text-anchor="middle" font-size="11">accept for example).</text>
+      </g>
+    </svg>
+    <figcaption>
+      One approval is enough to move a submission forward, but a flag or rejection by another curator stops the submission. Clearing someone else's flag is a lead
+      curator's action and records who was consulted so that there are records of all the decisions.
+    </figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="sec-head"><h2>How a new version of MalAvi is generated</h2>
+    <span class="pill soon">Being built</span></div>
+  <p>
+    When the curators deem enough submissions are in, one of them will run the software that builds the new version. A diff file will be created that shows the differences from one version to another. This also allows curators to make ad hoc fixes that are identified as well.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 1100 300" role="img"
+         aria-label="Accepted records plus the stored database are built into a dated release.">
+      <defs>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7"
+                markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g font-size="12" fill="currentColor" stroke="none">
+
+        <rect x="20" y="46" width="212" height="70" rx="8" fill="none" stroke="currentColor"/>
+        <text x="126" y="74" text-anchor="middle" font-weight="700">Accepted records</text>
+        <text x="126" y="96" text-anchor="middle" font-size="11">since the last version</text>
+
+        <rect x="20" y="184" width="212" height="70" rx="8" fill="none" stroke="currentColor"/>
+        <text x="126" y="212" text-anchor="middle" font-weight="700">The database</text>
+        <text x="126" y="234" text-anchor="middle" font-size="11">every record from current version</text>
+
+        <path d="M232,80 C270,80 274,130 300,130" fill="none" stroke="currentColor"
+              marker-end="url(#a3)"/>
+        <path d="M232,220 C270,220 274,170 300,170" fill="none" stroke="currentColor"
+              marker-end="url(#a3)"/>
+
+        <rect x="304" y="100" width="264" height="100" rx="8"
+              fill="var(--accent-wash)" stroke="var(--accent)" stroke-width="2"/>
+        <text x="436" y="132" text-anchor="middle" font-weight="700">Build a new version</text>
+        <text x="436" y="162" text-anchor="middle" font-size="11">curator chooses when to run the software</text>
+
+        <line x1="568" y1="150" x2="616" y2="150" stroke="currentColor" marker-end="url(#a3)"/>
+        <text x="592" y="138" text-anchor="middle" font-size="11">the version</text>
+        <text x="592" y="124" text-anchor="middle" font-size="11">is dated</text>
+
+        <rect x="620" y="104" width="216" height="94" rx="8" fill="none" stroke="currentColor"/>
+        <text x="728" y="157" text-anchor="middle" font-weight="700">The new release is built</text>
+
+        <path d="M836,130 C864,130 868,52 892,52" fill="none" stroke="currentColor"
+              marker-end="url(#a3)"/>
+        <path d="M836,151 C868,151 872,151 892,151" fill="none" stroke="currentColor"
+              marker-end="url(#a3)"/>
+        <path d="M836,172 C864,172 868,240 892,240" fill="none" stroke="currentColor"
+              marker-end="url(#a3)"/>
+
+        <rect x="896" y="28" width="188" height="48" rx="8" fill="none" stroke="var(--g-p)"/>
+        <text x="990" y="57" text-anchor="middle">malaviR package</text>
+
+        <rect x="896" y="127" width="188" height="48" rx="8" fill="none" stroke="var(--g-h)"/>
+        <text x="990" y="156" text-anchor="middle">The new website</text>
+
+        <rect x="896" y="212" width="188" height="58" rx="8" fill="none" stroke="var(--g-l)"/>
+        <text x="990" y="236" text-anchor="middle">The BLAST tool (or anything</text>
+        <text x="990" y="256" text-anchor="middle">else that needs it)</text>
+      </g>
+    </svg>
+    <figcaption>
+      A single, dated, versioned release is produced and can be used in any tools we build. The website allows direct download of the full dataset (malaviR is currently built to host old dataset versions as well).
+    </figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="sec-head"><h2>Who does what</h2></div>
+  <p>
+    Curators review submitted data and can add data from papers they find, but they don't need to know any coding. Only the maintainer needs to deal with code (and the maintainer is likely also one of the curators, probably the lead curator).
+    Note that submitters will need Google accounts to submit with the machinery I've set up, but if they can't do that, they can just email their submissions to the curators.
+  </p>
+
+  <div class="grid four">
+    <div class="card">
+      <h3>Submitter</h3>
+      <p>Fills in and submits the template, and/or a paper. Can follow their submission's progress on the website.</p>
+      <div class="needs">A web form with Google acct, or just send an email</div>
+    </div>
+    <div class="card">
+      <h3>Curator</h3>
+      <p>Reviews the report generated by submission and records a verdict.</p>
+      <div class="needs">Browser and email needed...easy.</div>
+    </div>
+    <div class="card">
+      <h3>Lead curator</h3>
+      <p>Everything a curator does, plus clearing another curator's flag or overriding a rejection after discussion.</p>
+      <div class="needs">Browser and email needed...easy.</div>
+    </div>
+    <div class="card">
+      <h3>Maintainer</h3>
+      <p>Keeps the software running and builds each new version.</p>
+      <div class="needs">Command line programming needed.</div>
+    </div>
+  </div>
+
+  <div class="note">
+    <p>
+      <strong>Unpublished data can be submitted and are held privately.</strong> This is (as it's always been) so someone can
+      reserve a lineage name before their paper is out. The queue on the website shows the name and
+      the date the lineage name was claimed, but does not show who claimed it or anything else about the parasite.
+    </p>
+  </div>
+</section>
+
+<footer>
+  <p>
+    Written up by V. Ellis 2026-08-06.
+  </p>
+</footer>
+
+</div>
+<!-- GUIDE:CONTENT-END -->

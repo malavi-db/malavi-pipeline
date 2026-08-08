@@ -1,0 +1,461 @@
+#!/usr/bin/env python3
+# @title Fetch curator verdicts from the Google Form and apply them to the review ledger
+# @purpose Read the verdict responses sheet, turn each response into a ledger action, and
+#   record it — so that a curator clicking a link in their email actually moves the
+#   submission they were asked about.
+# @why Every rule about verdicts, holds, overrides and corrections was written and tested
+#   in malavi_curation.ledger, and none of it ran: the responses sat in a sheet nothing
+#   read. This is the join between the two.
+# @input config/project.yml (review.verdict_sheet, review.verdict_sheet_timezone)
+# @input config/curators.yml (who may record a verdict)
+# @output curation/intake/submissions/review_ledger.json (via malavi_curation.ledger)
+# @output curation/intake/submissions/verdicts_applied.json (which responses are done)
+# @program python3
+# @critical-var VERDICT_SHEET
+# @critical-var APPLIED_LEDGER_NAME
+# @critical-flag fetch_verdicts.py "" --dry-run
+"""Pull curator verdicts out of the Google Form and record them in the review ledger.
+
+What this program is
+--------------------
+The return half of the submission loop. ``fetch_submissions.py`` brings work *in*;
+this brings the decisions about that work *back*. A curator reads a report, clicks the
+prefilled link in it, answers a form, and their answer lands in a spreadsheet. Until this
+program runs, that is all that has happened — the spreadsheet is not the ledger, and
+nothing in MalAvi has changed.
+
+Three properties it has to have, each for a specific reason
+-----------------------------------------------------------
+**It never decides anything.** It parses a response into a *request* and hands that request
+to :mod:`malavi_curation.ledger`, which re-checks every rule at the moment of the write: is
+this address an active curator, does a standing objection block this approval, did this
+person author the revision they are trying to approve. If the rules refuse, the refusal is
+recorded and the run continues. Moving a rule check into this file would mean the rule is
+enforced in whichever caller remembered it.
+
+**It is idempotent.** The sheet is append-only from Google's side and this program may run
+on a schedule, by hand, and again after a failure. Recording a verdict twice would not
+merely be untidy: two approvals from one curator look like agreement between two people.
+Every response is fingerprinted by its content and applied at most once — see
+:func:`fingerprint`.
+
+**It never throws a response away.** A response that cannot be parsed, that names an
+unknown submission, that comes from an address not in the registry, or that the ledger
+refuses — all of them are *filed*, with the reason, in ``verdicts_applied.json``. By the
+time anyone reads a log the curator has submitted their decision and gone; a decision that
+vanishes because a field was mistyped is worse than one that is visibly stuck.
+
+What a verdict does to a submission's state
+-------------------------------------------
+Recording the verdict and moving the state are two separate steps here, in that order, and
+the first does not depend on the second succeeding. The verdict is the durable thing: it is
+the curator's act, and it belongs in the record whether or not the submission happened to
+be in a state that could move.
+
+The moves themselves follow ``ops/curator-instructions.src.html``, which is what curators
+were actually promised:
+
+* **Accept** — the submission is picked up (``ready_for_review`` → ``in_review`` if it had
+  not been already) and then approved, which starts the 24-hour publish hold. The ledger
+  refuses the approval outright if an objection stands, which is the rule that makes the
+  hold worth having.
+* **Flag for further review** — moves to ``held``. Allowed from ``approved`` as well as
+  from ``in_review``, and that is the whole point of the publish window: an objection
+  recorded at hour 23 of 24 still stops the release.
+* **Reject** — *also* moves to ``held``, deliberately, and **not** to the terminal
+  ``declined`` state. The curator instructions promise that "the lead curator can still
+  overrule the decision after discussion with the curators", and an override acts on a
+  standing objection. Ending the submission outright on one curator's say-so would make
+  that promise false and would have automation resolving a disagreement, which is the one
+  thing this system is built not to do. Declining for good is a deliberate act by a lead,
+  not a consequence of a form submission.
+
+Reading the sheet
+-----------------
+Access is authenticated: the verdict sheet must never be link-shared, because verdict
+reason text quotes what was wrong with somebody's unpublished data and curator identities
+sit beside it. The service account needs Viewer on it; see ``curation/GOOGLE_ACCESS.md``.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import io
+import json
+import sys
+import urllib.error
+import urllib.request
+from datetime import timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from malavi_curation import google_auth, ledger, verdicts  # noqa: E402
+from malavi_curation.config import load_config, repo_root  # noqa: E402
+
+# Which responses have already been acted on. Lives in the gitignored intake tree beside
+# the review ledger, for the same reason the ledger does: the rows it fingerprints quote
+# unpublished data.
+APPLIED_LEDGER_NAME = "verdicts_applied.json"
+
+TIMEOUT = 60
+
+
+# ======================================================================================
+# Reading the responses sheet
+# ======================================================================================
+
+def fetch_rows(sheet_id: str, token: str) -> List[Dict[str, str]]:
+    """Return the verdict responses sheet as a list of {question: answer} dicts.
+
+    Exported as CSV through the Drive API, which is the documented way to read a private
+    Sheet. There is deliberately no unauthenticated fallback here, unlike in
+    ``fetch_submissions.py``: that one keeps a link-shared path only so an older sheet can
+    still be read, and this sheet must never be link-shared at all.
+    """
+    url = (f"https://www.googleapis.com/drive/v3/files/{sheet_id}/export"
+           f"?mimeType=text%2Fcsv")
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "malavi_rebuild/fetch_verdicts",
+                 "Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        raw = response.read()
+    # utf-8-sig: Google prefixes its CSV export with a byte-order mark, which would
+    # otherwise become part of the first column's name and stop every lookup on it.
+    return list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+
+
+def fingerprint(row: Dict[str, Any]) -> str:
+    """A stable identity for one response, derived from its content.
+
+    Row *position* is not usable as an identity: Google's export order is not guaranteed to
+    be stable across edits, and a curator (or a maintainer) editing an earlier row would
+    shift every fingerprint after it, causing every later response to be applied a second
+    time.
+
+    Content is. Two responses that agree on every field including the timestamp are the
+    same response — Forms stamps to the second, and one curator submitting the same form
+    twice within one second is not a case worth distinguishing from a duplicated export.
+    """
+    canonical = json.dumps({str(k): ("" if v is None else str(v))
+                            for k, v in row.items()},
+                           sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def load_applied(path: Path) -> Dict[str, Dict[str, Any]]:
+    """Which responses this program has already dealt with, keyed by fingerprint."""
+    if not path.is_file():
+        return {}
+    try:
+        loaded = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        # A corrupt applied-ledger must stop the run. Treating it as empty would re-apply
+        # every response in the sheet, which is exactly the duplication this file prevents.
+        raise SystemExit(f"{path} could not be read ({exc}). Fix or move it; continuing "
+                         f"would re-apply every response in the sheet.")
+    return loaded.get("responses", {}) if isinstance(loaded, dict) else {}
+
+
+def save_applied(path: Path, applied: Dict[str, Dict[str, Any]]) -> None:
+    """Write the applied-ledger, whole, via a temporary file in the same directory."""
+    payload = {"schema": 1, "updated": ledger.now_utc(), "responses": applied}
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    temporary.replace(path)
+
+
+# ======================================================================================
+# Applying one response
+# ======================================================================================
+
+def _advance_after_verdict(entry: ledger.Entry, verdict: str, actor: str,
+                           at: str, config: Dict[str, Any]) -> Tuple[str, str]:
+    """Move the submission's state to match a verdict just recorded.
+
+    Returns ``(moved_to, why_not)`` — exactly one of which is non-empty. Never raises:
+    the verdict is already in the ledger by the time this is called, and a state that
+    could not move is a thing to report, not a reason to lose the verdict.
+
+    See this module's docstring for why "Reject" lands on ``held`` rather than ``declined``.
+    """
+    moved: List[str] = []
+
+    def attempt(to_state: str) -> bool:
+        """Try one transition; report failure rather than raising."""
+        try:
+            ledger.transition(entry, to_state, actor=actor, at=at, config=config)
+        except ledger.LedgerError:
+            return False
+        moved.append(to_state)
+        return True
+
+    # Any verdict means a curator has picked the submission up. This is a no-op for a
+    # submission already in review, and it is what lets the first verdict on a freshly
+    # reported submission land without a separate "claim it" step no interface offers.
+    if entry.state == "ready_for_review":
+        attempt("in_review")
+
+    if verdict == "approve":
+        # A held submission becomes approvable again once the objection that held it was
+        # retracted or overridden. Nothing else notices that, so the next approval is what
+        # brings it back into review.
+        if entry.state == "held" and ledger.is_approvable(entry)[0]:
+            attempt("in_review")
+        if entry.state == "in_review":
+            # transition() re-checks is_approvable at the write, so a hold recorded between
+            # the parse and here still wins.
+            if not attempt("approved"):
+                _, why_not = ledger.is_approvable(entry)
+                return "", (why_not or f"cannot approve from state {entry.state!r}")
+        else:
+            # An approval that changed nothing is the single most misleading outcome this
+            # program can produce: the curator believes they approved it. Say which rule
+            # stopped it, not merely that the state did not move -- "no state change from
+            # 'held'" sends a maintainer looking at the state machine when the answer is
+            # that somebody has an objection standing.
+            approvable, why_not = ledger.is_approvable(entry)
+            if not approvable:
+                return "", why_not
+    elif verdict in ledger.BLOCKING_VERDICTS:
+        # `approved` -> `held` is the late objection inside the 24-hour publish window,
+        # and is the reason that window exists.
+        if entry.state in ("in_review", "approved"):
+            attempt("held")
+
+    if moved:
+        return " -> ".join(moved), ""
+    return "", f"no state change from {entry.state!r}"
+
+
+def apply_action(entries: Dict[str, ledger.Entry], action: verdicts.Action,
+                 config: Dict[str, Any],
+                 registry_path: Optional[Path] = None) -> Dict[str, str]:
+    """Apply one parsed response to the ledger.
+
+    Returns a small record for the applied-ledger: what happened and, when nothing did,
+    why. Every failure mode below is a *filed* outcome rather than an exception, because
+    one unusable response must not stop the fifty good ones behind it.
+
+    ``registry_path`` overrides which curator registry authorizes the responder. It exists
+    so the tests can express a scenario with two curators and a lead without editing
+    MalAvi's real registry; in production it is None and the configured registry is used.
+    """
+    entry = entries.get(action.submission_id)
+    if entry is None:
+        # Deliberately not created. A verdict is the only thing that would be creating it,
+        # and a submission that exists only because somebody recorded a verdict about it is
+        # a mistyped identifier, not a submission.
+        return {"status": "unknown_submission", "submission": action.submission_id,
+                "detail": ("no such submission in the review ledger; the id was probably "
+                           "typed rather than carried by a prefilled link")}
+
+    base = {"submission": action.submission_id, "kind": action.kind,
+            "address": action.address, "at": action.at}
+
+    try:
+        if action.kind == "verdict":
+            stored = ledger.record_verdict(
+                entry, action.address, action.verdict,
+                reason_text=action.reason_text, at=action.at, revision=action.revision,
+                registry_path=registry_path)
+            if stored is None:
+                # record_verdict files unrecognized addresses and unreadable revisions on
+                # the entry itself and returns None. It is recorded, not acted on.
+                return {**base, "status": "filed_unrecognized",
+                        "detail": "not attributable to an active curator; see "
+                                  "entry.unrecognized in the review ledger"}
+            moved, why_not = _advance_after_verdict(
+                entry, action.verdict, actor=stored.curator, at=action.at, config=config)
+            return {**base, "status": "applied", "verdict": action.verdict,
+                    "verdict_id": stored.id, "state": entry.state,
+                    "detail": f"state {moved}" if moved else f"verdict recorded; {why_not}"}
+
+        if action.kind == "override":
+            record = ledger.override_hold(
+                entry, action.hold_id, action.address, consulted=action.consulted,
+                consulted_on=action.consulted_on, consulted_how=action.consulted_how,
+                note=action.reason_text, at=action.at, registry_path=registry_path)
+            # Clearing the last standing objection is what lets a held submission move
+            # again. It goes back to review rather than straight to approved: the override
+            # removed an obstacle, it did not express approval.
+            if entry.state == "held" and not ledger.blocking_holds(entry):
+                try:
+                    ledger.transition(entry, "in_review", actor=record.by, at=action.at,
+                                      config=config)
+                except ledger.LedgerError:
+                    pass
+            return {**base, "status": "applied", "hold_id": action.hold_id,
+                    "state": entry.state, "detail": f"hold {action.hold_id} cleared by "
+                                                    f"{record.by}"}
+
+        if action.kind == "retraction":
+            record = ledger.retract_verdict(entry, action.target_id, action.address,
+                                            at=action.at, registry_path=registry_path)
+            if entry.state == "held" and not ledger.blocking_holds(entry):
+                try:
+                    ledger.transition(entry, "in_review", actor=record.curator,
+                                      at=action.at, config=config)
+                except ledger.LedgerError:
+                    pass
+            return {**base, "status": "applied", "hold_id": action.target_id,
+                    "state": entry.state,
+                    "detail": f"{action.target_id} withdrawn by {record.curator}"}
+
+        if action.kind == "correction":
+            correction = ledger.record_correction(
+                entry, action.address, change=action.change, authority=action.authority,
+                consulted=action.consulted, consulted_on=action.consulted_on,
+                at=action.at, registry_path=registry_path)
+            return {**base, "status": "applied", "correction_id": correction.id,
+                    "state": entry.state,
+                    "detail": "proposed; a lead must approve it before it is applied"}
+
+        if action.kind == "correction_approval":
+            correction = ledger.approve_correction(
+                entry, action.target_id, action.address, at=action.at,
+                registry_path=registry_path)
+            return {**base, "status": "applied", "correction_id": correction.id,
+                    "state": entry.state,
+                    "detail": f"approved by {correction.approved_by}; the maintainer "
+                              f"applies it and the report is regenerated"}
+
+        return {**base, "status": "error", "detail": f"unknown action kind {action.kind!r}"}
+
+    except ledger.LedgerError as exc:
+        # A rule refused it. This is the system working, not a fault: the refusal is the
+        # record of why nothing happened, and it is what a maintainer needs to see.
+        return {**base, "status": "refused", "detail": str(exc)}
+
+
+# ======================================================================================
+# The run
+# ======================================================================================
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="parse and report; write nothing to either ledger")
+    parser.add_argument("--sheet", default=None,
+                        help="override the sheet id from config/project.yml")
+    parser.add_argument("--from-csv", default=None, type=Path,
+                        help="read responses from a local CSV instead of Google, for "
+                             "testing the applier without a credential")
+    arguments = parser.parse_args(argv)
+
+    config = load_config()
+    review = config.get("review") or {}
+    sheet_id = arguments.sheet or review.get("verdict_sheet")
+
+    root = repo_root()
+    inbox = root / (config.get("submissions", {}) or {}).get(
+        "inbox_dir", "curation/intake/submissions")
+    applied_path = inbox / APPLIED_LEDGER_NAME
+
+    print("== malavi_rebuild :: fetch_verdicts ==")
+
+    # The sheet's timezone is load-bearing, not cosmetic: Google records a response time
+    # with no offset, and that time drives the 24-hour publish hold and the 60-day timeout.
+    zone_name = str(review.get("verdict_sheet_timezone", "UTC")).strip().upper()
+    if zone_name not in ("UTC", "GMT"):
+        print(f"\nconfig says the verdict sheet is set to {zone_name!r}, but this program\n"
+              f"can only read a sheet set to UTC. A response time with the wrong zone is\n"
+              f"wrong by up to a day, and that lands on the publish hold.", file=sys.stderr)
+        return 1
+    sheet_timezone = timezone.utc
+
+    # --- get the rows ---------------------------------------------------------------
+    if arguments.from_csv is not None:
+        rows = list(csv.DictReader(io.StringIO(
+            arguments.from_csv.read_text(encoding="utf-8-sig"))))
+        print(f"responses: {len(rows)} row(s) from {arguments.from_csv}")
+    else:
+        if not sheet_id:
+            print("config/project.yml has no review.verdict_sheet", file=sys.stderr)
+            return 1
+        # Say which identity is being used before reading anything. A run that finds
+        # nothing because it could not authenticate looks exactly like a quiet week.
+        print(google_auth.describe())
+        try:
+            token = google_auth.access_token()
+        except google_auth.CredentialError as exc:
+            print(f"\n{exc}", file=sys.stderr)
+            return 1
+        if token is None:
+            print("\nNo Google credential configured. The verdict sheet is not, and must\n"
+                  "never be, link-shared — it quotes unpublished data and names curators.\n"
+                  "Set up read-only access first: curation/GOOGLE_ACCESS.md.", file=sys.stderr)
+            return 1
+        try:
+            rows = fetch_rows(sheet_id, token)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (403, 404):
+                print(f"\nDrive refused the verdict sheet ({exc.code}). Share it as Viewer "
+                      f"with:\n    {google_auth.service_account_email() or 'unknown address'}",
+                      file=sys.stderr)
+                return 1
+            raise
+        print(f"verdict sheet: {len(rows)} row(s)\n")
+
+    applied = load_applied(applied_path)
+
+    # --- parse first, outside the lock ----------------------------------------------
+    # Parsing touches no shared state, and doing it before taking the ledger lock keeps
+    # the lock held for as short a time as possible.
+    pending: List[Tuple[str, Any, Dict[str, Any]]] = []
+    already = 0
+    for row in rows:
+        key = fingerprint(row)
+        if key in applied:
+            already += 1
+            continue
+        pending.append((key, verdicts.parse_row(row, sheet_timezone), row))
+
+    print(f"{already} response(s) already applied, {len(pending)} new\n")
+    if not pending:
+        return 0
+
+    # --- apply, under the ledger lock ------------------------------------------------
+    results: Dict[str, Dict[str, Any]] = {}
+    with ledger.open_ledger(inbox, write=not arguments.dry_run) as entries:
+        for key, parsed, row in pending:
+            if not parsed.ok:
+                # A Rejected. Filed with its reason so a maintainer can go and look at the
+                # sheet row; never re-tried, because re-parsing it would fail identically.
+                outcome = {"status": "unparseable", "detail": parsed.reason}
+            else:
+                outcome = apply_action(entries, parsed, config)
+            outcome["at_run"] = ledger.now_utc()
+            results[key] = outcome
+
+            label = outcome.get("submission", "-")
+            print(f"  [{outcome['status']:<20}] {label}  {outcome.get('detail', '')}")
+
+    if arguments.dry_run:
+        print("\n[dry-run] nothing was written to the review ledger or the applied ledger.")
+        return 0
+
+    applied.update(results)
+    save_applied(applied_path, applied)
+
+    # --- summary ---------------------------------------------------------------------
+    counts: Dict[str, int] = {}
+    for outcome in results.values():
+        counts[outcome["status"]] = counts.get(outcome["status"], 0) + 1
+    print("\n" + ", ".join(f"{count} {status}" for status, count in sorted(counts.items())))
+
+    # Anything that is not a clean application wants a person to look at it. Exit 2 rather
+    # than 1 so a scheduled job can distinguish "responses need attention" from "the job
+    # could not run" -- the same convention check_template.py uses.
+    needs_attention = sum(count for status, count in counts.items() if status != "applied")
+    if needs_attention:
+        print(f"{needs_attention} response(s) need a maintainer's attention.")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

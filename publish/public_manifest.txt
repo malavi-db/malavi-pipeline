@@ -1,0 +1,114 @@
+# =============================================================================
+# What goes into the PUBLIC pipeline repository (malavi-db/malavi-pipeline).
+# Read by publish/push_pipeline.sh. Nothing not listed here is ever copied.
+# =============================================================================
+#
+# WHY AN ALLOWLIST AND NOT A LIST OF EXCLUSIONS
+# ---------------------------------------------
+# The private repository holds submissions from people who have not published yet,
+# curator identities, working notes and credentials. A list of things to leave behind
+# fails the first time somebody adds a file nobody thought of: the new file is public by
+# default, and nobody finds out. A list of things to take fails the other way -- a new
+# file is absent until somebody adds it here on purpose. Absent is recoverable. Published
+# is not.
+#
+# This is the same reasoning that makes publish/push_site.sh copy docs/ and only docs/.
+#
+# FORMAT
+# ------
+#   path            a file, copied to the same path in the public repo
+#   path/           a directory, copied recursively
+#   src -> dest     copied under a different name
+#   # comment       ignored
+#
+# Directory copies still skip the junk listed in ALWAYS_SKIP in push_pipeline.sh
+# (__pycache__, .pyc, .DS_Store and so on), because those are noise in every tree.
+#
+# WHAT DELIBERATELY IS NOT HERE, AND WHY
+# --------------------------------------
+#   config/project.yml     holds live Drive folder ids, sheet ids, form edit URLs and the
+#                          report endpoint. A sanitized project.example.yml is GENERATED
+#                          from it by the publisher, with every such value blanked.
+#   config/curators.yml    real curator addresses and personal aliases. An example ships
+#                          instead.
+#   curation/intake/       submissions, including unpublished sequences from people who
+#                          asked us to hold them. The single most important exclusion.
+#   curation/benchmark/    papers and ground-truth annotations built from them.
+#   data/                  the record store, which accumulates submissions BEFORE they are
+#                          released, including embargoed ones. The public artifact for
+#                          data is the release, which is published separately.
+#   docs/                  the rendered website. It has its own public repository already.
+#   ops/*.html             build output; the same documents are already live on the site.
+#   DELIVERY_PLAN.md       design argument, open problems, things not yet built.
+#   CUSTODY_PRIVATE.md     recovery paths. Never, under any circumstances.
+#   results/, legacy/,     working notes, scratch, archived material.
+#   preview/               a development tool whose output inlines the whole submission
+#                          queue into one file. Its own header says never to publish it.
+
+# ---- the library and the programs that use it -------------------------------
+curation/src/
+curation/tests/
+curation/r/
+curation/templates/
+curation/pyproject.toml
+curation/README.md
+curation/apply_corrections.py
+curation/batch_intake.py
+curation/build_name_reservations.py
+curation/build_release.py
+curation/build_site_feeds.py
+curation/check_template.py
+curation/enroll.py
+curation/fetch_oa_articles.py
+curation/fetch_submissions.py
+curation/fetch_verdicts.py
+curation/notify_submitters.py
+curation/promote.py
+curation/publish_report.py
+
+# ---- the Google-side pieces, as templates -----------------------------------
+# Every id and secret in these is a PASTE_ME placeholder; the live values live in
+# CUSTODY_PRIVATE.md. Whoever installs them fills them in by hand anyway.
+curation/apps_script/
+
+# ---- the rest of the pipeline -----------------------------------------------
+export/
+
+# The watcher, named file by file rather than as a directory. Its tree is mostly
+# runtime output -- a BLAST database rebuilt from each release, cached GenBank
+# records, Slurm logs, and the worklists of individual runs. All of it is
+# regenerated, none of it is code, and together it was 23 MB of the first build.
+watcher/scan_publications.py
+watcher/lineage_gap_finder.py
+watcher/notify.py
+watcher/test_scan_publications.py
+watcher/extract_malavi_lineages.R
+watcher/extract_malavi_refs.R
+watcher/slurm/
+watcher/README.md
+
+schemas/
+reference/
+backup/lifeboat.sh
+publish/push_site.sh
+publish/README.md
+publish/public_manifest.txt
+publish/push_pipeline.sh
+
+# ---- documentation generator, and its sources -------------------------------
+# The rendered .html it produces is excluded: those documents are already published on
+# the website, and shipping build output alongside its source invites the two to drift.
+ops/build_docs.py
+ops/README.md
+ops/_shared_style.html
+ops/curator-instructions.src.html
+ops/malavi-user-guide.src.html
+
+# ---- documents ---------------------------------------------------------------
+RUNBOOK.md
+BREAK_GLASS.md
+CITATION.cff
+LICENSE
+config/curators.example.yml
+publish/public_README.md -> README.md
+publish/public_gitignore -> .gitignore

@@ -1,0 +1,619 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "malavi/submission.schema.json",
+  "title": "MalAvi data submission",
+  "description": "A structured submission of new data for the curation queue. Mirrors the GitHub Issue form (.github/ISSUE_TEMPLATE/data_submission.yml) and is the target output of the curation helper's record_builder. One submission may cover many lineage/host/locality rows.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Semantic version of this schema, stamped by whichever builder produced the submission. Not required, so a submission written before versioning still validates; always emitted going forward. It exists so a check run can state which contract it was reading, not to drive migrations -- there are no external consumers to migrate.",
+      "examples": [
+        "1.0.0"
+      ]
+    },
+    "submitter": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string",
+          "format": "email"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "reference": {
+      "type": "object",
+      "description": "The publication the data come from.",
+      "properties": {
+        "doi": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "DOI of the paper."
+        },
+        "pmid": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "PubMed ID."
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "year": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "accessions": {
+      "type": "array",
+      "description": "GenBank / NCBI accessions reported for the new lineages.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "records": {
+      "type": "array",
+      "description": "Candidate host/locality rows, loosely aligned to the Hosts and Sites schema. Curator validates before ingest.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "lineage_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "host_species": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "site": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "coordinates": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parasite_genus": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "Plasmodium",
+              "Haemoproteus",
+              "Leucocytozoon",
+              null
+            ]
+          },
+          "number_tested": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Prevalence numerator's denominator: individuals tested for this host/lineage/locality, if reported. Optional; often only in supplementary tables."
+          },
+          "number_found": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Individuals found infected with this lineage at this host/locality, if reported. Must be <= number_tested (checked at the validation gate)."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "focal",
+              "reprinted",
+              "scope_uncertain",
+              "unknown",
+              null
+            ],
+            "description": "Whether this record is the paper's own data or data it reprinted from another study, as determined from the paper's own statements about provenance (see curation source_scope). Advisory: 'reprinted' rows are kept for the curator, never dropped automatically."
+          },
+          "tier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "new",
+              "confirms",
+              "review",
+              "incomplete",
+              null
+            ],
+            "description": "Curator triage tier (see curation row_flags): 'new' = complete, fully resolved and not already in MalAvi; 'confirms' = correctly read but MalAvi already records the association under an earlier reference; 'review' = a flag needs a curator's judgment; 'incomplete' = missing a lineage or a host. Advisory only: no tier causes a row to be dropped."
+          },
+          "flags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "Row-level validation flags (see curation row_flags). Advisory only: flags are never gates, and a flagged row is never dropped or altered.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "description": "Which check raised this flag (a key of row_flags.FLAGS)."
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "warn",
+                    "info"
+                  ],
+                  "description": "'warn' = probably wrong or self-contradictory; 'info' = needs a decision but is not evidence of error."
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Curator-facing description, specific to this row."
+                },
+                "detail": {
+                  "type": "string",
+                  "description": "Supporting evidence, when there is any."
+                }
+              },
+              "required": [
+                "code",
+                "severity",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "source": {
+            "type": "object",
+            "description": "Where a value came from, so a finding can name the cell rather than make the curator hunt for it. Template submissions carry sheet+row (the true worksheet row number, matching what the submitter sees in Excel); PDF extractions carry file and table.",
+            "properties": {
+              "sheet": {
+                "type": "string"
+              },
+              "row": {
+                "type": "number"
+              },
+              "file": {
+                "type": "string"
+              },
+              "table": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "vectors": {
+      "type": "array",
+      "description": "Candidate arthropod-vector detection rows, loosely aligned to the Vector Data schema. Curator validates before ingest.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "lineage_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vector_species": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Arthropod vector the lineage was detected in (e.g. 'Culex pipiens')."
+          },
+          "vector_method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Detection method / evidence type."
+          },
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "site": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "focal",
+              "reprinted",
+              "scope_uncertain",
+              "unknown",
+              null
+            ],
+            "description": "Whether this vector is the paper's own data or data it reprinted from another study, as determined from the paper's own statements about provenance (see curation source_scope). Advisory: 'reprinted' rows are kept for the curator, never dropped automatically."
+          },
+          "tier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "new",
+              "confirms",
+              "review",
+              "incomplete",
+              null
+            ],
+            "description": "Curator triage tier (see curation row_flags). Advisory only: no tier causes a row to be dropped."
+          },
+          "flags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "Row-level validation flags (see curation row_flags). Advisory only: flags are never gates, and a flagged row is never dropped or altered.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "description": "Which check raised this flag (a key of row_flags.FLAGS)."
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "warn",
+                    "info"
+                  ],
+                  "description": "'warn' = probably wrong or self-contradictory; 'info' = needs a decision but is not evidence of error."
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Curator-facing description, specific to this row."
+                },
+                "detail": {
+                  "type": "string",
+                  "description": "Supporting evidence, when there is any."
+                }
+              },
+              "required": [
+                "code",
+                "severity",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "source": {
+            "type": "object",
+            "description": "Where a value came from, so a finding can name the cell rather than make the curator hunt for it. Template submissions carry sheet+row (the true worksheet row number, matching what the submitter sees in Excel); PDF extractions carry file and table.",
+            "properties": {
+              "sheet": {
+                "type": "string"
+              },
+              "row": {
+                "type": "number"
+              },
+              "file": {
+                "type": "string"
+              },
+              "table": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "sequences": {
+      "type": "array",
+      "description": "Nucleotide sequences supplied with the submission, one per proposed lineage. Present for template submissions (the Sequences sheet); normally absent for PDF extraction, which mines accessions rather than sequences. Both the submitted text and a cleaned form are kept: the cleaned form is what the checks compare against the release, while positions of stop codons and novel bases must be reported against the text the submitter actually pasted for them to be findable.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "lineage_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sequence": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "As submitted, whitespace trimmed but otherwise untouched."
+          },
+          "sequence_clean": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Upper-cased, non-nucleotide characters removed, alignment gaps preserved."
+          },
+          "source": {
+            "type": "object",
+            "description": "Where a value came from, so a finding can name the cell rather than make the curator hunt for it. Template submissions carry sheet+row (the true worksheet row number, matching what the submitter sees in Excel); PDF extractions carry file and table.",
+            "properties": {
+              "sheet": {
+                "type": "string"
+              },
+              "row": {
+                "type": "number"
+              },
+              "file": {
+                "type": "string"
+              },
+              "table": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "proposed_lineages": {
+      "type": "array",
+      "description": "Lineage names the submitter proposes as new (the template's NewLineages sheet). Distinct from records: a proposal is a claim on a name, which the curator confirms or corrects, and which the name-reservation feed reads. Nothing here is accepted automatically.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "lineage_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parasite_genus": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "Plasmodium",
+              "Haemoproteus",
+              "Leucocytozoon",
+              null
+            ]
+          },
+          "host_species": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The representative host the submitter says the lineage was first found in -- the name the acronym is built from."
+          },
+          "accessions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reference": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Citation key tying this row to a row on the Reference sheet."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "object",
+            "description": "Where a value came from, so a finding can name the cell rather than make the curator hunt for it. Template submissions carry sheet+row (the true worksheet row number, matching what the submitter sees in Excel); PDF extractions carry file and table.",
+            "properties": {
+              "sheet": {
+                "type": "string"
+              },
+              "row": {
+                "type": "number"
+              },
+              "file": {
+                "type": "string"
+              },
+              "table": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "description": "How this submission was produced (set by the curation helper, blank for manual issue submissions).",
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": [
+            "issue_form",
+            "curation_helper",
+            "template",
+            "manual"
+          ]
+        },
+        "tool_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extracted_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "needs_review": {
+          "type": "boolean",
+          "default": true
+        },
+        "normalizations": {
+          "type": "array",
+          "description": "Every value the normalization contract changed, with what the submitter wrote beside what the system made of it. The report shows the two side by side so a curator can always tell a submitter's entry from our interpretation of it; nothing is rewritten silently.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "submitted": {
+                "type": [
+                  "string",
+                  "number",
+                  "null"
+                ]
+              },
+              "normalized": {
+                "type": [
+                  "string",
+                  "number",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "object",
+                "description": "Where a value came from, so a finding can name the cell rather than make the curator hunt for it. Template submissions carry sheet+row (the true worksheet row number, matching what the submitter sees in Excel); PDF extractions carry file and table.",
+                "properties": {
+                  "sheet": {
+                    "type": "string"
+                  },
+                  "row": {
+                    "type": "number"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "table": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "description": "Pre-ingest validation gate result, attached by curation/gate.py. Annotation only; the submission is never auto-ingested.",
+      "properties": {
+        "passed": {
+          "type": "boolean",
+          "description": "True iff there are no error-severity findings."
+        },
+        "n_error": {
+          "type": "number"
+        },
+        "n_warn": {
+          "type": "number"
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "check": {
+                "type": "string"
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "error",
+                  "warn",
+                  "info"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "where": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "array",
+      "description": "malaviR validation flag lines (curation/validate.py).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "validation_detail": {
+      "type": "object",
+      "description": "Raw malaviR validation result."
+    }
+  },
+  "required": [
+    "reference"
+  ],
+  "additionalProperties": false
+}

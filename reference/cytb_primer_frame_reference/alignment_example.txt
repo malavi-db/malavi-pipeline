@@ -1,0 +1,27 @@
+HAEM ASV: Asv1 len 478 reads 1350860 -> ref P_SGS1_Plasmodium_relictum pid 100 
+LEUC ASV: Asv1 len 476 -> ref L_STOCC16 pid 100 
+
+=========== HAEM example (positions 1-28, 5' end) ===========
+ref lineage P_SGS1_Plasmodium_relictum vs Asv1 ASV (N = absent forward-primer base at pos 1)
+
+P_SGS1_Plasmodium_relictum  GCAACTGGTGCTTCATTTGTATTTATTT
+                             |||||||||||||||||||||||||||
+Asv1 (478bp)                NCAACTGGTGCTTCATTTGTATTTATTT
+
+=========== HAEM example (positions 452-479, 3' end) ===========
+P_SGS1_Plasmodium_relictum  TTTTAGCACAAAGTTTATTTGGAATACT
+                            ||||||||||||||||||||||||||||
+Asv1 (478bp)                TTTTAGCACAAAGTTTATTTGGAATACT
+
+=========== LEUC example (positions 1-28, 5' end) ===========
+ref lineage L_STOCC16 vs Asv1 ASV (N = absent forward-primer base at pos 1)
+
+L_STOCC16     TCAACAGGAGCATCTTTTGTATTTATAT
+               |||||||||||||||||||||||||||
+Asv1 (476bp)  NCAACAGGAGCATCTTTTGTATTTATAT
+
+=========== LEUC example (positions 452-479, 3' end; NN = absent reverse-primer bases) ===========
+L_STOCC16     TCTTATTCCAAAGCTTATTTGGAATTGC
+              ||||||||||||||||||||||||||  
+Asv1 (476bp)  TCTTATTCCAAAGCTTATTTGGAATTNN
+
