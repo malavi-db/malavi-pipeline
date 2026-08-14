@@ -31,6 +31,14 @@ REGIONS = {"Sweden": "EUROPE", "Brazil": "SOUTH_AMERICA", "United States": "NORT
 
 
 def _lineage(name, sequence="ACGT", genus="Haemoproteus", species="", acc=""):
+    """One lineage row.
+
+    ``species`` is the FULL BINOMIAL, as it is in the store: all 238 lineages that carry
+    one hold e.g. "Leucocytozoon toddi", never a bare epithet. This fixture accepted an
+    epithet until 2026-08-10, which is why test_label_appends_a_morphospecies_when_there_
+    is_one asserted the intended label format against data the store never contains, and
+    the real output -- with a duplicated genus and a space in it -- shipped unchecked.
+    """
     return {"LINEAGE_NAME": name, "GENBANK_ACC": acc, "SEQ_LENGTH": "Full",
             "GENUS_NAME": genus, "SPECIES_NAME": species, "SEQUENCE": sequence}
 
@@ -140,8 +148,28 @@ class TestAlignment:
 
     def test_label_appends_a_morphospecies_when_there_is_one(self):
         label = fasta_label(_lineage("ALARV01", genus="Haemoproteus",
-                                     species="tartakovskyi"))
+                                     species="Haemoproteus tartakovskyi"))
         assert label == "H_ALARV01_Haemoproteus_tartakovskyi"
+
+    def test_no_label_contains_whitespace(self):
+        """FASTA readers truncate the sequence id at the first space.
+
+        238 released labels did, so their ids silently lost everything after the genus.
+        """
+        for species in ("Leucocytozoon toddi", "Haemoproteus tartakovskyi", ""):
+            label = fasta_label(_lineage("X01", genus="Leucocytozoon", species=species))
+            assert " " not in label
+
+    def test_the_genus_is_not_repeated(self):
+        label = fasta_label(_lineage("ACCFRA01", genus="Leucocytozoon",
+                                     species="Leucocytozoon toddi"))
+        assert label == "L_ACCFRA01_Leucocytozoon_toddi"
+
+    def test_an_unassigned_genus_contributes_no_slash(self):
+        """GENUS_NAME is literally "N/A" on 7 lineages, and a / in a FASTA id is trouble."""
+        label = fasta_label(_lineage("ACCNIS06", genus="N/A",
+                                     species="Haemoproteus nisi"))
+        assert label == "ACCNIS06_Haemoproteus_nisi"
 
     def test_an_unknown_genus_gets_no_invented_prefix(self):
         """Better a visibly odd label than a sequence silently filed under P_."""
@@ -263,3 +291,68 @@ class TestDiff:
         assert diff["only_in_build"] == ["NEW"]
         assert diff["only_in_reference"] == ["OLD"]
         assert diff["lineages_compared"] == 0
+
+
+class TestTheRecordChecks:
+    """Referential and arithmetic faults that shipped silently in the seeded store.
+
+    Warnings rather than refusals: each is a curator's decision about somebody's data.
+    What they must not do is go unnoticed, which is what they did until 2026-08-10.
+    """
+
+    def _warnings(self, tmp_path, store):
+        return build_release(store, "2026-01-01", tmp_path, region_map=REGIONS)["warnings"]
+
+    def test_a_citation_with_no_reference_row_is_reported(self, tmp_path):
+        store = {"lineages": [_lineage("L1")],
+                 "host_records": [_host("L1", reference="Kakogawa et al 2019")],
+                 "references": [], "vector_records": [], "morpho_species": [],
+                 "alt_names": []}
+        warnings = self._warnings(tmp_path, store)
+        assert any("Kakogawa et al 2019" in w and "no row in references.csv" in w
+                   for w in warnings)
+
+    def test_an_unpublished_citation_is_not_reported(self, tmp_path):
+        """"<Authors> unpubl" has no reference row BY DESIGN -- there is nothing to cite."""
+        store = {"lineages": [_lineage("L1")],
+                 "host_records": [_host("L1", reference="Ellis et al unpubl")],
+                 "references": [], "vector_records": [], "morpho_species": [],
+                 "alt_names": []}
+        assert not any("references.csv" in w for w in self._warnings(tmp_path, store))
+
+    def test_a_record_with_no_reference_at_all_is_reported(self, tmp_path):
+        store = {"lineages": [_lineage("L1")],
+                 "host_records": [_host("L1", reference="")],
+                 "references": [], "vector_records": [], "morpho_species": [],
+                 "alt_names": []}
+        assert any("no REFERENCE_NAME at all" in w for w in self._warnings(tmp_path, store))
+
+    def test_a_duplicated_reference_name_is_reported(self, tmp_path):
+        """It is the join key, so a duplicate fans out every join on it."""
+        reference = {"REFERENCE_NAME": "Pramual et al 2020", "PUBLICATION_YEAR": "2020",
+                     "TITLE": "T", "JOURNAL_NAME": "J", "VOLUME_PAGES": "1:1",
+                     "STUDY_TYPE": "Vector screening"}
+        store = {"lineages": [_lineage("L1")], "host_records": [],
+                 "references": [reference, dict(reference, TITLE="t")],
+                 "vector_records": [], "morpho_species": [], "alt_names": []}
+        assert any("appear more than once in references.csv" in w
+                   for w in self._warnings(tmp_path, store))
+
+    def test_more_found_than_tested_is_reported(self, tmp_path):
+        host = _host("L1", reference="Ref 2020")
+        host.update({"RECORD_ID": "HST-000867", "NUMBER_FOUND": "2", "NUMBER_TESTED": "1"})
+        store = {"lineages": [_lineage("L1")], "host_records": [host],
+                 "references": [], "vector_records": [], "morpho_species": [],
+                 "alt_names": []}
+        warnings = self._warnings(tmp_path, store)
+        assert any("more infections than birds tested" in w and "HST-000867" in w
+                   for w in warnings)
+
+    def test_a_numerator_with_no_denominator_is_not_reported(self, tmp_path):
+        """1,691 rows are like this. It is what Staffan received, not a fault."""
+        host = _host("L1", reference="Ref 2020")
+        host.update({"NUMBER_FOUND": "2", "NUMBER_TESTED": ""})
+        store = {"lineages": [_lineage("L1")], "host_records": [host],
+                 "references": [], "vector_records": [], "morpho_species": [],
+                 "alt_names": []}
+        assert not any("more infections" in w for w in self._warnings(tmp_path, store))

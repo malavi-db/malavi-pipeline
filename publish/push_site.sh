@@ -45,8 +45,17 @@ LOG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/logs"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/publish_$(date +%Y%m%d_%H%M%S).log"
 
+# An unrecognized argument is a hard error, not a live publish. This is the program that
+# stands between the private tree and the public web, and the old test -- "is argument 1
+# exactly --dry-run?" -- meant that --dryrun, --dry_run or -n all synced, committed and
+# pushed to the public site while the person typing believed they were previewing.
 DRY_RUN=0
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+case "${1:-}" in
+  "")         ;;
+  --dry-run)  DRY_RUN=1 ;;
+  *)          printf 'unknown argument: %s\nusage: push_site.sh [--dry-run]\n' "$1" >&2
+              exit 2 ;;
+esac
 
 log() { printf '%s  %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "${LOG_FILE}"; }
 
@@ -155,6 +164,21 @@ fi
 #   style.css, site.js, datatables-init.js, references.json, site.json
 #                      the scaffold's assets, likewise superseded.
 #
+# THE SCAFFOLD FILES WERE DELETED ON 2026-08-13 and their exclusions kept, the
+# same way sanger.html's was kept after that tool moved out. An exclusion for a
+# file that does not exist costs nothing and is the only thing that would stop a
+# name being republished if it ever came back -- which is how the scaffold got
+# onto the live site in the first place. They were never live: the live tree held
+# only index.html, curating.html and how-it-works.html when this was written.
+#
+# submit.html is gone from here too, but for the opposite reason. It was NOT
+# empty scaffold: it held Staffan's submission instructions, several paragraphs
+# of which existed in no other file. It moved to ops/submit.src.html, out of the
+# published tree but intact. On 2026-08-14 the paragraphs that existed nowhere
+# else were folded into the Submit tab of index.html and published; the header of
+# ops/submit.src.html lists exactly which ones and where they landed. Its
+# exclusion stays here regardless, for the reason given above.
+#
 # Note on what is NOT excluded: assets/img/hemignathus_virens.png is the
 # 'amakihi illustration, which index.html embeds inline as a base64 data URI, so
 # no browser ever fetches the standalone file. It is published anyway, and
@@ -169,7 +193,14 @@ RSYNC_FLAGS=(
   --exclude ".git/"
   --exclude "_config_notes.md"
   --exclude "assets/js/tests/"
+  # The Sanger .ab1 tool is a separate, unfinished project that lives in this tree. Its
+  # modules were excluded in d3e7b5e; the PAGE that loads them was not, and nothing else
+  # here would have stopped it shipping. sanger.html imports assets/js/sanger/ui.mjs and
+  # assets/css/style.css and assets/js/site.js -- all excluded -- so publishing it alone
+  # puts a page on the public site whose script and stylesheet both 404.
   --exclude "assets/js/sanger/"
+  --exclude "sanger.html"
+  --exclude "assets/css/sanger.css"
   --exclude "about.html" --exclude "blast.html"
   --exclude "submit.html" --exclude "tables.html"
   --exclude "assets/css/style.css"

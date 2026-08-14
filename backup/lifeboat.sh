@@ -16,6 +16,7 @@
 # @critical-var LIFEBOAT_DIR
 # @critical-var PROJECT_DIR
 # @critical-var MALAVIR_DIR
+# @critical-var CREDENTIAL_DIR
 # @critical-var MAX_STATE_FILE_SIZE
 # @critical-flag git bundle --all
 # =============================================================================
@@ -39,6 +40,11 @@ LIFEBOAT_DIR="${LIFEBOAT_DIR:-${HOME}/malavi_lifeboat}"
 # is an R package with its own public GitHub remote and its own history.
 PROJECT_DIR="${PROJECT_DIR:-/mnt/ellisbiostore/malavi_rebuild}"
 MALAVIR_DIR="${MALAVIR_DIR:-/mnt/ellisbiostore/malaviR}"
+
+# Where the credentials that must NOT live in the repository are kept. Both
+# google.service_account_key and google.report_secret_file in config/project.yml
+# point inside here; see section 2 for why the whole directory is copied.
+CREDENTIAL_DIR="${CREDENTIAL_DIR:-${HOME}/.config/malavi}"
 
 # State files above this size are assumed to be PDFs, spreadsheets of raw
 # downloads, or other re-fetchable bulk, and are skipped. The state worth
@@ -98,7 +104,20 @@ git -C "${MALAVIR_DIR}" bundle create "${LIFEBOAT_DIR}/repos/malaviR.bundle" --a
 
 # ---- 2. the credentials -----------------------------------------------------
 # Copied with -p so the 600 permission survives. These are the files that make
-# the difference between "we have the code" and "we can publish the site".
+# the difference between "we have the code" and "we can publish the site", and
+# between "we can publish the site" and "we can actually operate MalAvi".
+#
+# THIS SECTION COPIED ONLY THE GITHUB TOKEN UNTIL 2026-08-14, while
+# CUSTODY_PRIVATE.md asserted that the report secret was here too. A restore
+# would have produced a working site publisher, a dead submission fetch and dead
+# report delivery -- discovered only when a curator was not emailed.
+#
+# The whole of ${CREDENTIAL_DIR} is taken rather than a list of filenames,
+# because a list is exactly how the other two came to be missing: a credential
+# added there later would not be in it. Everything in that directory is a
+# credential by construction -- config/project.yml documents it as the home for
+# keys that must live outside the repository (google.service_account_key,
+# google.report_secret_file), and google_auth.py refuses a key inside the repo.
 log ""
 log "-- credentials --"
 for secret in "${PROJECT_DIR}/malavi_site_github_token.txt"; do
@@ -109,6 +128,18 @@ for secret in "${PROJECT_DIR}/malavi_site_github_token.txt"; do
     log "    MISSING: ${secret}"
   fi
 done
+
+# The out-of-repository credentials: the Drive service-account key that
+# fetch_submissions and fetch_verdicts authenticate with, and the shared secret
+# that signs every curator-report delivery.
+if [[ -d "${CREDENTIAL_DIR}" ]]; then
+  rsync -a "${CREDENTIAL_DIR}/" "${LIFEBOAT_DIR}/secrets/config_malavi/"
+  while IFS= read -r credential; do
+    log "    config_malavi/$(basename "${credential}")"
+  done < <(find "${CREDENTIAL_DIR}" -maxdepth 1 -type f | sort)
+else
+  log "    MISSING: ${CREDENTIAL_DIR} -- the Drive key and the report secret are NOT in this lifeboat."
+fi
 chmod -R go-rwx "${LIFEBOAT_DIR}/secrets"
 
 # ---- 3. the state that is not in git ----------------------------------------
@@ -222,7 +253,8 @@ Everything else is listed at the bottom, with how to get it back.
 |---|---|
 | `repos/malavi_rebuild.bundle` | Complete git history of the private project repo |
 | `repos/malaviR.bundle` | Complete git history of the malaviR R package |
-| `secrets/` | The GitHub token that publishes the site. Mode 600. |
+| `secrets/malavi_site_github_token.txt` | The GitHub token that publishes the site. Mode 600. |
+| `secrets/config_malavi/` | Everything from `~/.config/malavi`: the Drive service-account key that fetches submissions and verdicts, and the shared secret that signs curator-report delivery. Mode 600. |
 | `state/data_releases/` | The most recently built MalAvi release |
 | `state/curation_intake/` | Submissions, verdicts and the processing ledger (PDFs excluded) |
 | `state/watcher_cache/` | What the literature watcher has already reported |
@@ -247,6 +279,14 @@ Then put back the parts that git does not carry:
 cd malavi_rebuild
 cp ~/malavi_lifeboat/secrets/malavi_site_github_token.txt .
 chmod 600 malavi_site_github_token.txt
+
+# The credentials that must stay outside the repository. config/project.yml
+# expects them at exactly these paths; without them fetch_submissions.py,
+# fetch_verdicts.py and publish_report.py all fail to authenticate.
+mkdir -p ~/.config/malavi
+cp -p ~/malavi_lifeboat/secrets/config_malavi/* ~/.config/malavi/
+chmod 700 ~/.config/malavi && chmod 600 ~/.config/malavi/*
+
 mkdir -p data/releases curation/intake watcher/cache
 cp -r ~/malavi_lifeboat/state/data_releases/*     data/releases/
 cp -r ~/malavi_lifeboat/state/curation_intake/*   curation/intake/

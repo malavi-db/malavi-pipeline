@@ -2,9 +2,10 @@
 
 Every feed the site reads carries a `generated` timestamp, which means a plain
 write produces a different file on every run even when nothing about the data
-moved. The daily submissions workflow commits whatever changed, so that alone
-was enough to put a commit in the history every day of the year -- three files,
-three insertions, three deletions, all of them the timestamp line.
+moved. The feeds are committed whenever they change -- by a daily GitHub Actions
+workflow when this was written, by hand on BIOMIX since 2026-08-13 -- so that
+alone was enough to put a commit in the history every day of the year: three
+files, three insertions, three deletions, all of them the timestamp line.
 
 `write_feed` compares the new payload against the file already on disk with the
 timestamp removed from both. If nothing else differs it leaves the file exactly

@@ -140,7 +140,7 @@ submissions:
       reason: "Test submission while building the form; Gupta worked example, no real data."
     - id: 
       reason: "Test submission while building the form; Gupta worked example, no real data."
-    - id: 
+    - id: 20260806T210800_DEMO_Testsubmission
       reason: "Demonstration submission built from release data to exercise the pipeline and produce the screenshots in the curator instructions. Invented study, invented submitter; TUMIG31 and TUMIG25 are not real claims and must never reach the public reservation feed."
 
 # -----------------------------------------------------------------------------
@@ -183,9 +183,16 @@ review:
   curator_registry: config/curators.yml
 
   # ---------------------------------------------------------------------------
-  # The curator verdict form, created 2026-08-06 by
+  # The curator verdict form, REGENERATED 2026-08-10 by
   # curation/apps_script/create_verdict_form.gs, owned by malaviadmin@gmail.com.
   # Rebuild it by re-running that script rather than editing it by hand.
+  #
+  # Why it was regenerated: the previous form's unlisted URL was published to the
+  # public repo on 2026-08-08. Scrubbing that history did not close the exposure --
+  # old commits stay reachable by exact SHA until GitHub garbage-collects -- so the
+  # form itself was replaced. The retired form (edit id 1WIxsSOz8...) was set to
+  # setAcceptingResponses(false) on 2026-08-10 and is KEPT, not deleted: its sheet
+  # (1YOpHOOihy...) is the record of any verdict cast against it.
   #
   # Email collection is VERIFIED (confirmed in the script's execution log), so
   # every response carries an address Google confirmed the responder controls.
@@ -197,9 +204,23 @@ review:
   # Entry ids for building prefilled links, so a curator never types either value.
   # The revision matters as much as the id: it is what binds an approval to the
   # version of the report the curator actually read.
+  #
+  # Read off the LIVE form on 2026-08-13 with
+  # curation/apps_script/inspect_verdict_form.gs :: showPrefillEntryIds, after the two
+  # questions were re-created during a hand edit. An entry id belongs to the question, not
+  # the form, so re-creating one issues a new id and the old value goes stale silently --
+  # the link still loads, the fields just arrive blank, and the curator is back to typing
+  # a submission id by hand. Which is the failure the prefilled link exists to prevent.
+  #
+  # The previous values were submission_id 606681712 / revision 1938633740. The form URL
+  # itself did not change; only the questions were replaced.
+  #
+  # AFTER ANY HAND EDIT TO THE FORM, run showPrefillEntryIds and compare. Nothing in the
+  # test suite can catch this -- the values live in Google, and a wrong one produces a
+  # working link that does nothing.
   verdict_form_entries:
-    submission_id: 1321287799
-    revision: 443144444
+    submission_id: 1106066870
+    revision: 1976575123
 
   # WHERE VERDICTS LAND. **Access is deliberately unresolved — see the note in
   # curation/apps_script/README.md.** Unlike the submission responses sheet, this

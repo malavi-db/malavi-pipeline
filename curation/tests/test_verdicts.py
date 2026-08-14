@@ -184,7 +184,6 @@ def test_an_override_missing_its_consultation_record_is_refused(blank, expected)
 def test_a_data_correction_carries_author_authority():
     row = good(**{
         verdicts.COL_ACTION: verdicts.ACTION_CORRECTION,
-        verdicts.COL_FLAGGED: "Yes — I have flagged it",
         verdicts.COL_CORRECTION_KIND: "Data — confirmed with the authors",
         verdicts.COL_CONFIRMED_BY: "R. Bukauskaite",
         verdicts.COL_CONFIRMED_ON: "2026-08-05",
@@ -197,7 +196,6 @@ def test_a_data_correction_carries_author_authority():
 def test_a_judgment_correction_carries_curator_authority():
     row = good(**{
         verdicts.COL_ACTION: verdicts.ACTION_CORRECTION,
-        verdicts.COL_FLAGGED: "Yes — I have flagged it",
         verdicts.COL_CORRECTION_KIND: "Judgment — confirmed with another curator",
         verdicts.COL_CONFIRMED_BY: "Alice",
         verdicts.COL_CHANGE: "Country spelling.",
@@ -208,7 +206,6 @@ def test_a_judgment_correction_carries_curator_authority():
 def test_a_correction_naming_nobody_is_refused():
     row = good(**{
         verdicts.COL_ACTION: verdicts.ACTION_CORRECTION,
-        verdicts.COL_FLAGGED: "Yes — I have flagged it",
         verdicts.COL_CORRECTION_KIND: "Judgment — confirmed with another curator",
         verdicts.COL_CONFIRMED_BY: "",
         verdicts.COL_CHANGE: "Country spelling.",
@@ -262,17 +259,99 @@ def test_the_configured_sheet_timezone_matches_what_the_parser_assumes():
     assert load_config()["review"]["verdict_sheet_timezone"] == "UTC"
 
 
-def test_a_correction_without_a_flag_is_refused():
-    """A fix and an accept cannot be the same act.
+def test_the_parser_does_not_judge_whether_a_flag_stands():
+    """The "must accompany a flag" rule belongs to the ledger, not to this parser.
 
-    Otherwise the maintainer applies a change nobody has reviewed in its final form, and
-    the curator has approved a version that did not exist when they approved it.
+    It used to be asked on the form and enforced here, which was a second copy of a rule
+    ledger.record_correction already enforces from its own record of what is flagged --
+    see test_a_correction_requires_a_standing_flag. The duplicate was worse than
+    redundant: the form's honest answer, "No, I will flag it now", made this parser
+    discard the correction the curator had just written out.
+
+    So a well-formed correction row parses. Whether it is allowed to land is decided at
+    the write, against the ledger's state rather than the curator's recollection.
     """
     row = good(**{
         verdicts.COL_ACTION: verdicts.ACTION_CORRECTION,
-        verdicts.COL_FLAGGED: "No — I will flag it now before submitting this",
         verdicts.COL_CORRECTION_KIND: "Judgment — confirmed with another curator",
         verdicts.COL_CONFIRMED_BY: "Alice",
         verdicts.COL_CHANGE: "Country spelling.",
     })
-    assert "must accompany a flag" in parse_row(row).reason
+    action = parse_row(row)
+    assert action.kind == "correction"
+    assert not hasattr(verdicts, "COL_FLAGGED")
+
+
+# ------------------------------------------------- closing a submission for good
+
+def _close_row(reason="A flag on it was never answered", note="", who="lead@example.edu"):
+    return {
+        verdicts.COL_TIMESTAMP: "2026-08-13 09:00:00",
+        verdicts.COL_EMAIL: who,
+        verdicts.COL_SUBMISSION: "MALAVI-SUB-2026-000001",
+        verdicts.COL_REVISION: "2",
+        verdicts.COL_ACTION: verdicts.ACTION_CLOSE,
+        verdicts.COL_CLOSE_REASON: reason,
+        verdicts.COL_CLOSE_NOTE: note,
+    }
+
+
+def test_a_close_parses_to_a_disposition_code():
+    """What the lead reads is not what the decision record stores."""
+    action = verdicts.parse_row(_close_row())
+
+    assert action.ok and action.kind == "close"
+    assert action.reason_code == "unresolved_objection"
+    assert action.submission_id == "MALAVI-SUB-2026-000001"
+    assert action.revision == 2
+
+
+def test_every_offered_reason_maps_to_a_real_disposition_code():
+    """The form's list and the ledger's vocabulary must not drift apart.
+
+    The code reaches data/decisions.json, so an unmapped one would be refused at the write
+    after the curator had already submitted and gone.
+    """
+    from malavi_curation import ledger
+
+    for label in verdicts.CLOSE_REASONS:
+        action = verdicts.parse_row(_close_row(reason=label))
+        assert action.ok, f"{label!r} did not parse"
+        assert action.reason_code in ledger.DECLINE_REASON_CODES
+
+
+def test_a_reason_the_form_does_not_offer_is_refused():
+    action = verdicts.parse_row(_close_row(reason="I just don't like it"))
+
+    assert not action.ok
+    assert "unknown closing reason" in action.reason
+
+
+def test_the_note_is_kept_apart_from_the_code():
+    """Free text stays in the gitignored ledger; only the code is published."""
+    action = verdicts.parse_row(_close_row(note="Spoke to the authors on 12 Aug."))
+
+    assert action.reason_code == "unresolved_objection"
+    assert action.reason_text == "Spoke to the authors on 12 Aug."
+
+
+def test_the_apps_script_offers_exactly_the_reasons_python_parses():
+    """The live form is built by the .gs file; a word changed in one place breaks the other.
+
+    Forms records the answer as the literal string a curator clicked, so the two lists are
+    a single interface with two implementations and nothing but this test holding them
+    together.
+    """
+    import re
+    from malavi_curation.config import repo_root
+
+    script = (repo_root() / "curation" / "apps_script"
+              / "create_verdict_form.gs").read_text(encoding="utf-8")
+    block = re.search(r"var CLOSE_REASONS = \[(.*?)\];", script, re.S)
+    assert block, "CLOSE_REASONS is not declared in create_verdict_form.gs"
+    offered = set(re.findall(r"'([^']+)'", block.group(1)))
+
+    assert offered == set(verdicts.CLOSE_REASONS)
+
+    action_line = re.search(r"var ACTION_CLOSE = '([^']+)';", script)
+    assert action_line and action_line.group(1) == verdicts.ACTION_CLOSE

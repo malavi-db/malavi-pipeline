@@ -18,7 +18,7 @@ from malavi_curation import ledger
 from malavi_curation.ledger import (
     LedgerError, agreed_names, approvals, blocking_holds, bump_revision, decision_record, due_actions,
     ensure_entry, is_approvable, load, open_ledger, override_hold, public_queue,
-    record_verdict, retract_verdict, save, stale_live, standing_positions, transition,
+    record_verdict, retract_verdict, save, stale_live, standing_positions, transition, releasable, set_embargo,
 )
 
 # Two curators and a lead, so "another curator's hold" is expressible.
@@ -908,3 +908,249 @@ def test_corrections_round_trip(tmp_path, entry, registry):
     save(tmp_path, {entry.submission_id: entry})
     back = load(tmp_path)[entry.submission_id].corrections[0]
     assert (back.by, back.approved_by, back.authority) == ("alice", "lead", "author")
+
+
+# ------------------------------------------------------------------- embargo at the write
+#
+# transition() promises "every blocking rule is re-checked here". The embargo was not
+# among them until 2026-08-10, which made that promise untrue of the one rule protecting
+# a submitter's unpublished data.
+
+def test_an_embargoed_submission_cannot_be_released(entry, registry):
+    to_review(entry)
+    approve(entry, registry)
+    transition(entry, "approved", "alice", at="2026-08-03T00:00:00+00:00", config=CLOCKS)
+    entry.embargoed = True
+    with pytest.raises(LedgerError, match="embargoed"):
+        transition(entry, "released", "maintainer", at="2026-08-05T00:00:00+00:00",
+                   reason="released_in_build", config=CLOCKS)
+    assert entry.state == "approved"
+
+
+def test_lifting_the_embargo_lets_it_release(entry, registry):
+    """The refusal is about the flag, not about the submission."""
+    to_review(entry)
+    approve(entry, registry)
+    transition(entry, "approved", "alice", at="2026-08-03T00:00:00+00:00", config=CLOCKS)
+    entry.embargoed = True
+    set_embargo(entry, False, actor="maintainer", at="2026-08-04T00:00:00+00:00")
+    transition(entry, "released", "maintainer", at="2026-08-05T00:00:00+00:00",
+               reason="released_in_build", config=CLOCKS)
+    assert entry.state == "released"
+
+
+def test_due_actions_does_not_offer_an_embargoed_submission(entry, registry):
+    """It disagreed with releasable(), so promote.py told the operator it was ready."""
+    to_review(entry)
+    approve(entry, registry)
+    transition(entry, "approved", "alice", at="2026-08-03T00:00:00+00:00", config=CLOCKS)
+    entry.embargoed = True
+    entries = {entry.submission_id: entry}
+    actions = [a.action for a in due_actions(entries, now="2026-08-05T00:00:00+00:00",
+                                             config=CLOCKS)]
+    assert "release_eligible" not in actions
+    assert releasable(entries) == []
+
+
+# --------------------------------------------------------------- id minting after a delete
+#
+# The ledger is a hand-editable file. Corrections minted ids by counting until 2026-08-10,
+# in the same module that explains why counting is wrong for verdicts.
+
+def test_a_correction_id_is_not_reissued_after_a_hand_delete(entry, registry):
+    """approve_correction returns the FIRST match, so a duplicate id gets the wrong one."""
+    to_review(entry)
+    hold(entry, registry)
+    from malavi_curation.ledger import record_correction
+    first = record_correction(entry, "alice@example.edu", "Host is Turdus merula.",
+                              "curator", ["bob"], registry_path=registry)
+    second = record_correction(entry, "alice@example.edu", "Country is Sweden.",
+                               "curator", ["bob"], registry_path=registry)
+    assert (first.id, second.id) == ("C1", "C2")
+
+    # Somebody edits the file and removes the first correction.
+    entry.corrections = [c for c in entry.corrections if c.id != "C1"]
+    third = record_correction(entry, "alice@example.edu", "Site is Krankesjon.",
+                              "curator", ["bob"], registry_path=registry)
+    assert third.id == "C3"
+    assert len({c.id for c in entry.corrections}) == len(entry.corrections)
+
+
+def test_a_verdict_id_is_not_reissued_after_a_hand_delete(entry, registry):
+    """The rule the correction path was missing, still holding for verdicts.
+
+    Deleting the LAST id is not the hazard -- there is then nothing to collide with, and
+    reusing it is correct. The hazard is deleting an earlier one while a higher id
+    survives, which is what counting would step on.
+    """
+    to_review(entry)
+    first = approve(entry, registry, who="alice")
+    second = hold(entry, registry, who="bob")
+    assert (first.id, second.id) == ("V1", "V2")
+
+    entry.verdicts = [v for v in entry.verdicts if v.id != first.id]
+    third = approve(entry, registry, who="lead")
+    assert third.id == "V3"
+    assert len({v.id for v in entry.verdicts}) == len(entry.verdicts)
+
+
+def test_a_resubmission_records_the_state_it_moved_from(entry, registry):
+    """Anything reconstructing the timeline from history must see the step.
+
+    Without it, an audit reads a submission jumping from approved to held with nothing
+    between, which looks like a lost record rather than a revision.
+    """
+    to_review(entry)
+    approve(entry, registry)
+    transition(entry, "approved", "alice", at="2026-08-03T00:00:00+00:00", config=CLOCKS)
+
+    bump_revision(entry, authority="submitter", reason="corrected the host",
+                  at="2026-08-04T00:00:00+00:00")
+
+    assert entry.state == "in_review"
+    moves = [e for e in entry.history if e["event"] == "state"]
+    assert moves[-1]["from"] == "approved" and moves[-1]["to"] == "in_review"
+
+
+def test_a_resubmission_that_changes_no_state_records_no_move(entry, registry):
+    to_review(entry)
+    before = len([e for e in entry.history if e["event"] == "state"])
+    bump_revision(entry, authority="submitter", reason="more data",
+                  at="2026-08-04T00:00:00+00:00")
+    assert entry.state == "in_review"
+    assert len([e for e in entry.history if e["event"] == "state"]) == before
+
+
+# ------------------------------------------------------------------------ the clocks
+
+def test_the_clocks_accept_the_shape_every_caller_actually_passes():
+    """Regression, 2026-08-13: the review clocks were never configurable.
+
+    ``_review_config`` understood only the ``review`` *section* of config/project.yml, and
+    every caller in the repository passed the **whole config** — promote.py,
+    fetch_verdicts.py, notify_submitters.py, release_gate.py. So every lookup missed and
+    every caller silently got the defaults back.
+
+    It was invisible because the defaults, 24 hours and 60 days, are exactly what
+    config/project.yml says. The day anyone lengthened the publish hold as a governance
+    decision, the release gate and the submitter notices would have carried on using 24
+    hours with nothing anywhere saying so. Hence a non-default value here.
+    """
+    whole = {"review": {"publish_hold_hours": 48, "awaiting_submitter_timeout_days": 90},
+             "submissions": {"inbox_dir": "inbox"}}
+
+    assert ledger._review_config(whole) == {"publish_hold_hours": 48,
+                                            "awaiting_submitter_timeout_days": 90}
+    # Both shapes are in use — the tests here pass the section, the programs pass the
+    # whole config — and the two cannot be confused: a review section never contains a
+    # key called "review".
+    assert ledger._review_config(whole["review"]) == ledger._review_config(whole)
+
+
+def test_a_bad_clock_is_refused_through_either_shape():
+    """The validation must not be skipped by the shape that unwraps."""
+    for supplied in ({"publish_hold_hours": 0}, {"review": {"publish_hold_hours": 0}}):
+        with pytest.raises(LedgerError, match="must be positive"):
+            ledger._review_config(supplied)
+    for supplied in ({"publish_hold_hours": "soon"},
+                     {"review": {"publish_hold_hours": "soon"}}):
+        with pytest.raises(LedgerError, match="must be a whole number"):
+            ledger._review_config(supplied)
+
+
+def test_a_configured_hold_really_reaches_the_release_check(entry, registry):
+    """End to end: the number transition() enforces is the number the caller configured.
+
+    The unit test above would pass on a fix that repaired ``_review_config`` and nothing
+    else. This one fails unless the value survives the whole way to the rule that uses it.
+    """
+    to_review(entry)
+    approve(entry, registry)
+    transition(entry, "approved", "alice", at="2026-08-03T00:00:00+00:00", config=CLOCKS)
+    longer = {"review": {"publish_hold_hours": 48,
+                         "awaiting_submitter_timeout_days": 60}}
+
+    # 30 hours later: past the default 24, short of the configured 48.
+    with pytest.raises(LedgerError, match="48h publish hold has not elapsed"):
+        transition(entry, "released", "promoter", at="2026-08-04T06:00:00+00:00",
+                   reason="released_in_build", config=longer)
+
+    transition(entry, "released", "promoter", at="2026-08-05T06:00:00+00:00",
+               reason="released_in_build", config=longer)
+    assert entry.state == "released"
+
+
+# ------------------------------------------------------------------ closing for good
+
+def test_only_a_lead_can_close_a_submission(entry, registry):
+    """A rejection already gets a second look by landing on 'held'.
+
+    Ending it there should not rest on the same single judgment, and ``transition`` alone
+    would not have asked: it takes ``actor`` as free text and never resolves it, which is
+    right for the promoter and wrong for this.
+    """
+    to_review(entry)
+    hold(entry, registry, "bob")
+    transition(entry, "held", "bob", at="2026-08-02T02:00:00+00:00")
+
+    with pytest.raises(LedgerError, match="not an active lead curator"):
+        ledger.decline(entry, "alice@example.edu", reason="unresolved_objection",
+                       at="2026-08-10T00:00:00+00:00", registry_path=registry)
+    assert entry.state == "held", "nothing moved"
+
+    ledger.decline(entry, "lead@example.edu", reason="unresolved_objection",
+                   at="2026-08-10T00:00:00+00:00", registry_path=registry)
+    assert entry.state == "declined"
+    assert entry.final_disposition["by"] == "lead", "attributed to the id, not the address"
+    assert entry.final_disposition["reason_code"] == "unresolved_objection"
+    assert entry.name_state == "released"
+
+
+def test_a_close_reason_outside_the_decline_vocabulary_is_refused(entry, registry):
+    """The codes left out describe other ways a submission ends and would be false here."""
+    to_review(entry)
+    hold(entry, registry, "bob")
+    transition(entry, "held", "bob", at="2026-08-02T02:00:00+00:00")
+
+    for wrong in ("submitter_unresponsive", "released_in_build", "withdrawn_by_submitter",
+                  "reopened", ""):
+        with pytest.raises(LedgerError, match="reason must be one of"):
+            ledger.decline(entry, "lead@example.edu", reason=wrong,
+                           at="2026-08-10T00:00:00+00:00", registry_path=registry)
+        assert entry.state == "held"
+
+
+def test_an_approved_submission_cannot_be_closed_without_a_flag(entry, registry):
+    """A decline follows an objection; it does not replace one.
+
+    The state machine allows approved -> held and held -> declined, but not
+    approved -> declined, so somebody has to flag it and that flag is attributed to them.
+    """
+    to_review(entry)
+    approve(entry, registry)
+    transition(entry, "approved", "alice", at="2026-08-03T00:00:00+00:00", config=CLOCKS)
+
+    with pytest.raises(LedgerError, match="not an allowed transition"):
+        ledger.decline(entry, "lead@example.edu", reason="out_of_scope",
+                       at="2026-08-10T00:00:00+00:00", registry_path=registry)
+    assert entry.state == "approved"
+
+
+def test_a_closing_note_stays_out_of_the_decision_record(entry, registry):
+    """The note is free text. The decision record must carry no unpublished science."""
+    to_review(entry)
+    hold(entry, registry, "bob")
+    transition(entry, "held", "bob", at="2026-08-02T02:00:00+00:00")
+
+    ledger.decline(entry, "lead@example.edu", reason="duplicate",
+                   note="Same records as Barrow et al, already in MalAvi.",
+                   at="2026-08-10T00:00:00+00:00", registry_path=registry)
+
+    notes = [e for e in entry.history if e.get("event") == "decline_note"]
+    assert len(notes) == 1 and "Barrow" in notes[0]["note"]
+
+    record = ledger.decision_record({entry.submission_id: entry})
+    assert record, "the submission should appear in the decision record"
+    serialized = str(record)
+    assert "Barrow" not in serialized, "the note must not reach the committed record"
+    assert "duplicate" in serialized

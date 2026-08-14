@@ -104,7 +104,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     inbox = root / (config.get("submissions", {}) or {}).get(
         "inbox_dir", "curation/intake/submissions")
 
-    stale_days = arguments.stale_days or review.get("stale_review_days")
+    # `is not None`, not `or`: --stale-days 0 is a legitimate request (treat everything as
+    # stale, e.g. to see the whole board at once) and 0 is falsy, so `or` silently
+    # substituted the configured value for it.
+    stale_days = (arguments.stale_days if arguments.stale_days is not None
+                  else review.get("stale_review_days"))
     if stale_days is None:
         stale_days = DEFAULT_STALE_DAYS
         print(f"NOTE: config has no review.stale_review_days; using {stale_days} days.")
@@ -117,9 +121,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     reported: List[ledger.DueAction] = []
 
     with ledger.open_ledger(inbox, write=not arguments.dry_run) as entries:
+        # An empty ledger still gets a decision record written, at the bottom of this
+        # block. It used to return here instead, which is why data/decisions.json did not
+        # exist at all until 2026-08-13: nothing has been enrolled yet, so every run took
+        # this path. An absent record is indistinguishable from "this program has never
+        # run", and the record is the ONLY committed thing that will resolve a submission
+        # id later -- the ledger and the id map are both gitignored. Establishing it while
+        # it is empty means the first real decision arrives as a diff to a tracked file
+        # rather than as a new file nobody has reviewed the shape of.
         if not entries:
-            print("the review ledger is empty; nothing to do.")
-            return 0
+            print("the review ledger is empty; nothing is due.")
 
         due = ledger.due_actions(entries, now=arguments.now, config=config)
 
@@ -156,7 +167,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             reported.append(proposal)
             print(f"  [stale    ] {proposal.submission_id}  {proposal.because}")
 
-        if not due and not reported:
+        if entries and not due and not reported:
             print("  nothing is due.")
 
         # Taken inside the lock, so the record describes the ledger as it is after this

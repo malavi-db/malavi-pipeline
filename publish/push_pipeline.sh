@@ -68,6 +68,15 @@ PUBLIC_OK=(
   # The submission form. Linked from every page of the website and printed on the
   # submit tab, so it is public by design.
   "1FAIpQLSerNc5iuTRXGEpdT-qjtw5u-7AMtCyMXeRGaf9-jdC894bZ1g"
+
+  # Not an identifier at all: the name of the demo intake directory, which appears in
+  # config/project.yml only as a `submissions.exclude` entry. It trips the bare-token
+  # scan because the pattern asks for 25+ characters with an uppercase letter and a
+  # digit, and a timestamped directory name has all three. It names a test submission
+  # created here, refers to nothing in Google, and is quoted as an example in both
+  # RUNBOOK.md and submission_id.py's docstring -- all three of which are published.
+  # Added 2026-08-14, when it was blocking the publish outright.
+  "20260806T210800_DEMO_Testsubmission"
 )
 
 STAGING="$(mktemp -d)"
@@ -77,8 +86,16 @@ LOG_DIR="${ROOT}/logs"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/publish_pipeline_$(date +%Y%m%d_%H%M%S).log"
 
+# Same reasoning as push_site.sh: an unrecognized argument must not fall through to a real
+# publish. This one copies source code rather than a rendered site, so the cost of a
+# mistaken live run is higher, not lower.
 DRY_RUN=0
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+case "${1:-}" in
+  "")         ;;
+  --dry-run)  DRY_RUN=1 ;;
+  *)          printf 'unknown argument: %s\nusage: push_pipeline.sh [--dry-run]\n' "$1" >&2
+              exit 2 ;;
+esac
 
 log() { printf '%s  %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "${LOG_FILE}"; }
 
@@ -132,6 +149,35 @@ while IFS= read -r line; do
   copied=$((copied + 1))
 done < "${MANIFEST}"
 log "  ${copied} manifest entries copied"
+
+# ---- 1b. warn about maintainer programs the manifest does not name -----------
+# An allowlist fails safe -- a new file is absent from the public repo rather than
+# published by accident -- but "absent" has a cost of its own here. RUNBOOK.md and
+# BREAK_GLASS.md are both published, and BREAK_GLASS names the public repo as the
+# recovery route, so a program the runbook tells you to run and the manifest does not
+# carry leaves a successor with instructions for something that is not there. That is
+# exactly what happened: six programs written in August 2026 were missing until a
+# review found them.
+#
+# A WARNING, not an error. Deciding a program should stay private is legitimate; not
+# noticing it is missing is what this catches. Add a `# private: <reason>` comment
+# beside the name in the manifest if the omission is deliberate, and this stays quiet
+# about it only when the name appears there in any form.
+log ""
+log "-- checking for maintainer programs the manifest does not name --"
+unlisted=0
+while IFS= read -r program; do
+  if ! grep -q "^${program}\b" "${MANIFEST}"; then
+    log "  NOT PUBLISHED: ${program}"
+    unlisted=$((unlisted + 1))
+  fi
+done < <(cd "${ROOT}" && find curation -maxdepth 1 -name '*.py' -type f | sort)
+if [[ "${unlisted}" -gt 0 ]]; then
+  log "  ${unlisted} program(s) above are not in the manifest. If the RUNBOOK tells"
+  log "  anyone to run one of them, add it to publish/public_manifest.txt."
+else
+  log "  every curation/*.py is accounted for."
+fi
 
 # ---- 2. work out what must never appear -------------------------------------
 # Read the live config and pull out everything that looks like a Google identifier or a

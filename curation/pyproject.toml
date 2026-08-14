@@ -44,6 +44,22 @@ google = [
   # an explanatory error rather than reporting an empty inbox. See GOOGLE_ACCESS.md.
   "google-auth>=2.0",
 ]
+all = [
+  # Everything, by reference. This is what the maintainer's .venv is built from, and it
+  # exists so there is ONE answer to "which extras do I need" -- RUNBOOK §0 quotes it.
+  #
+  # Four different extras sets appeared across the docs before 2026-08-13 and none of them
+  # was the union, so anyone rebuilding the environment from the instructions got a
+  # partial install and found out at the first WeasyPrint or Drive call. Referenced by
+  # extra rather than by naming the packages again, so a new extra joins this set by
+  # being added above it, and the version pins keep one home.
+  "malavi-curation[pdf]",
+  "malavi-curation[tables]",
+  "malavi-curation[fetch]",
+  "malavi-curation[report]",
+  "malavi-curation[google]",
+  "malavi-curation[dev]",
+]
 dev = [
   "pytest>=7.0",
   # The suite exercises release building, which writes .xlsx, so it needs the tables

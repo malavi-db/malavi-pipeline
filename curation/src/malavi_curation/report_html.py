@@ -241,6 +241,11 @@ tr:last-child td { border-bottom:0; }
 tbody tr:hover td { background:var(--surface-2); }
 td.wrapcell { white-space:normal; min-width:280px; }
 td.rowno { color:var(--ink-3); font-variant-numeric:tabular-nums; text-align:right; }
+/* The Ref a curator quotes on the verdict form. Deliberately the most legible cell in
+   the row: it is the one value they have to copy by eye without mistyping. */
+td.handle { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight:700;
+  color:var(--accent); background:var(--accent-wash); text-align:center;
+  letter-spacing:.02em; white-space:nowrap; }
 td.mono, .mono td { font-family: ui-monospace, Menlo, Consolas, monospace;
   color:var(--ink); font-weight:600; }
 .was { color:var(--ink-3); text-decoration:line-through; }
@@ -294,7 +299,7 @@ footer { margin-top:56px; padding-top:18px; border-top:1px solid var(--rule);
   @page {
     size:A4; margin:16mm 14mm 18mm;
     @bottom-center {
-      content:"MalAvi curator report — page " counter(page) " of " counter(pages);
+      content:"__PAGE_LABEL__ — page " counter(page) " of " counter(pages);
       font-family:ui-sans-serif, sans-serif; font-size:8pt; color:#635C73;
     }
   }
@@ -337,13 +342,30 @@ _OUTCOME_WORD = {
 }
 
 
-def _stylesheet() -> str:
-    """The stylesheet with the font blob substituted in.
+def _stylesheet(page_label: str = "MalAvi curator report") -> str:
+    """The stylesheet with the font blob and the printed page label substituted in.
 
-    Kept out of the CSS literal so the tokens above stay readable; 17 KB of base64
-    in the middle of a stylesheet makes it impossible to review.
+    The font blob is kept out of the CSS literal so the tokens above stay readable; 17 KB
+    of base64 in the middle of a stylesheet makes it impossible to review.
+
+    ``page_label`` is the name printed in the footer of every page, and it exists because
+    this stylesheet is shared with the release edition report -- a document that is not a
+    curator report and must not say it is on all fourteen of its pages.
+
+    Both substitutions are **asserted**, not attempted. An unasserted ``str.replace``
+    that matches nothing is the exact failure that once shipped an unstyled verdict block:
+    it degrades to a silently wrong document rather than to an error, and the only reader
+    who would ever notice is the one holding the printout.
     """
-    return _STYLE.replace("__LEAGUE_GOTHIC__", WOFF_BASE64)
+    stylesheet = _STYLE
+    for placeholder, value in (("__LEAGUE_GOTHIC__", WOFF_BASE64),
+                               ("__PAGE_LABEL__", page_label)):
+        if placeholder not in stylesheet:
+            raise AssertionError(
+                f"the stylesheet has no {placeholder} placeholder, so {placeholder!r} "
+                f"would be dropped silently")
+        stylesheet = stylesheet.replace(placeholder, value)
+    return stylesheet
 
 
 def esc(value: Any) -> str:
@@ -428,13 +450,20 @@ def _header(submission: Dict[str, Any], run: CheckRun,
     return "\n".join(bits)
 
 
+#: The screen's two ways of saying "this name is not available": the release already owns
+#: it, or a submission still in the queue asked for it first. The report treats them the
+#: same when offering a free alternative — the submitter has to be given another name
+#: either way — and differently when saying why, which the finding headline handles.
+_NAME_UNAVAILABLE_CODES = ("name_already_in_malavi", "name_claimed_by_another_submission")
+
+
 def _claimed_names(screen: Optional[Any]) -> set:
-    """Proposed names the screen found MalAvi already owns."""
+    """Proposed names the screen found are not available to this submitter."""
     reports = screen if isinstance(screen, list) else ([screen] if screen else [])
     out = set()
     for report in reports:
         for issue in report.get("issues", []):
-            if issue.get("code") == "name_already_in_malavi" and issue.get("subject"):
+            if issue.get("code") in _NAME_UNAVAILABLE_CODES and issue.get("subject"):
                 out.add(str(issue["subject"]))
     return out
 
@@ -685,13 +714,115 @@ def _verdict_section(submission_id: Optional[str], revision: int) -> str:
 </div>"""
 
 
+def _standing_section(entry: Optional[Any]) -> str:
+    """The flags and corrections already on this submission, **with the ids that name them**.
+
+    Why this exists. Three of the verdict form's five actions need an identifier typed into
+    a box: "Which flag are you withdrawing?", "Which hold are you clearing?" and "Which
+    correction are you approving?". Those ids -- ``V1``, ``C1`` -- are minted in the review
+    ledger, which is gitignored and which no curator can open. So the actions existed, the
+    ledger enforced their rules, and there was no way for the person using the form to learn
+    what to type. A curator could raise a flag and then not be able to withdraw it; a lead
+    could not approve a correction, which is the gate every correction stops at.
+
+    Rendered from the ledger entry rather than recomputed, so "standing" here means exactly
+    what it means to the ledger: ``Verdict.blocks`` is a blocking verdict that has not been
+    retracted or overridden, and a pending correction is one no lead has approved yet.
+
+    Nothing is shown when nothing is standing. A report on a clean submission should not
+    carry an empty table explaining machinery the reader does not need.
+
+    This section is for curators and goes no further: the report is delivered to the curator
+    registry and nowhere else. The reason text quotes the submitter's data, which is why the
+    ledger it comes from is gitignored -- the audience here is the people who wrote it.
+    """
+    if entry is None:
+        return ""
+
+    # Duck-typed on purpose. The rule about what blocks belongs to the ledger, and reading
+    # it off the objects keeps this from becoming a second opinion about which flags count.
+    standing = [verdict for verdict in getattr(entry, "verdicts", []) or []
+                if getattr(verdict, "blocks", False)]
+    pending = [correction for correction in getattr(entry, "corrections", []) or []
+               if not getattr(correction, "approved", False)
+               and not getattr(correction, "applied", False)]
+    approved = [correction for correction in getattr(entry, "corrections", []) or []
+                if getattr(correction, "approved", False)
+                and not getattr(correction, "applied", False)]
+
+    if not standing and not pending and not approved:
+        return ""
+
+    blocks = ['<h2 class="display">Flags and corrections on this submission</h2>']
+
+    if standing:
+        rows = "\n".join(
+            f"<tr><td class=\"handle\">{esc(verdict.id)}</td>"
+            f"<td>{esc(verdict.curator)}</td>"
+            f"<td>{esc(_short_date(verdict.at))}</td>"
+            f"<td>revision {esc(verdict.revision)}</td>"
+            f"<td>{esc(verdict.reason_text or verdict.reason_code or '—')}</td></tr>"
+            for verdict in standing)
+        blocks.append(
+            '<p>These flags are blocking this submission. It cannot be approved while any '
+            'of them stands.</p>'
+            '<div class="tablewrap"><table>'
+            '<thead><tr><th>Flag</th><th>Raised by</th><th>When</th><th>On</th>'
+            '<th>Why</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>'
+            '<p class="note">Quote the <b>Flag</b> id on the verdict form. Use '
+            '&ldquo;Withdraw a flag you placed yourself&rdquo; for your own, or &ldquo;Clear '
+            'another curator&rsquo;s hold&rdquo; if you are a lead clearing somebody '
+            'else&rsquo;s.</p>')
+
+    if pending:
+        rows = "\n".join(
+            f"<tr><td class=\"handle\">{esc(correction.id)}</td>"
+            f"<td>{esc(correction.by)}</td>"
+            f"<td>{esc(_short_date(correction.at))}</td>"
+            f"<td>{esc(correction.change)}</td></tr>"
+            for correction in pending)
+        blocks.append(
+            '<p>These corrections are waiting for a lead curator to approve them. Nothing '
+            'is applied until one does.</p>'
+            '<div class="tablewrap"><table>'
+            '<thead><tr><th>Correction</th><th>Proposed by</th><th>When</th>'
+            '<th>What should change</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>'
+            '<p class="note">A lead quotes the <b>Correction</b> id under &ldquo;Approve a '
+            'correction&rdquo; on the verdict form.</p>')
+
+    if approved:
+        rows = "\n".join(
+            f"<tr><td class=\"handle\">{esc(correction.id)}</td>"
+            f"<td>{esc(correction.approved_by)}</td>"
+            f"<td>{esc(correction.change)}</td></tr>"
+            for correction in approved)
+        blocks.append(
+            '<p>These corrections have been approved and are waiting to be applied, which '
+            'will produce a new revision of this submission.</p>'
+            '<div class="tablewrap"><table>'
+            '<thead><tr><th>Correction</th><th>Approved by</th>'
+            '<th>What should change</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>')
+
+    return "\n".join(blocks)
+
+
+def _short_date(stamp: Any) -> str:
+    """The date part of an ISO timestamp. The time of day is noise in this table."""
+    text = str(stamp or "")
+    return text.split("T", 1)[0] if "T" in text else text
+
+
 # Which heading each check belongs under. A curator does not think in check ids; they
 # think "is the naming right", "is the sequence right", "do the host and place make
 # sense". Anything unlisted falls to the end under "Other", so adding a check cannot make
 # it silently disappear from the report.
 CHECK_GROUPS = (
     ("Naming", (
-        "name_already_in_malavi", "lineage_known", "lineage_not_in_malavi",
+        "name_already_in_malavi", "name_claimed_by_another_submission",
+        "lineage_known", "lineage_not_in_malavi",
         "lineage_unresolved", "lineage_accession_conflict", "lineage_missing",
         "lineage_without_sequence", "sequence_without_declaration",
         "lineage_without_host_record", "accession_malformed", "accession_format",
@@ -708,7 +839,8 @@ CHECK_GROUPS = (
         "lineage_previously_recorded")),
     ("Vectors", ("vector_missing", "vector_sanity", "vector_method")),
     ("The submission itself", (
-        "headers_intact", "reference_missing", "source_reprinted", "source_uncertain",
+        "headers_intact", "reference_missing", "reference_unpubl_malformed",
+        "source_reprinted", "source_uncertain",
         "values_normalized", "lineage_missing", "records_unlinked")),
 )
 
@@ -721,6 +853,8 @@ CHECK_GROUPS = (
 FINDING_HEADLINES = {
     "name_already_in_malavi":
         "{subjects} was listed as new, but MalAvi already has that name",
+    "name_claimed_by_another_submission":
+        "{subjects} was already claimed by an earlier submission still under review",
     "sequence_is_known_lineage":
         "{subjects} was listed as new, but the sequence is already in MalAvi",
     "sequence_qc": "{subjects}: unusual for a cytochrome b barcode",
@@ -743,6 +877,8 @@ FINDING_HEADLINES = {
     "record_without_prevalence": "{subjects} reports no numbers tested or found",
     "name_malformed": "{subjects} does not look like a name built from its host",
     "reference_missing": "The reference for this submission is incomplete",
+    "reference_unpubl_malformed":
+        "{subjects} does not follow MalAvi's naming for an unpublished study",
     "accession_format": "{subjects} has an accession that is not in the expected format",
     "headers_intact": "The workbook's column headers were changed or are missing",
     "host_missing": "{subjects} has a record with no host species",
@@ -1321,13 +1457,23 @@ def _records_section(submission: Dict[str, Any]) -> str:
     if not records and not vectors:
         return ""
 
-    out = ['<h2 class="display">Records</h2>']
+    # The handle a curator quotes to correct one of these. Generated by the same function
+    # the correction path resolves with, so the label on the page and the label the form
+    # accepts cannot drift apart.
+    from .record_handles import handles as _handles      # noqa: PLC0415 - avoids a cycle
+    handle_for = {(entry.kind, entry.index): entry.handle for entry in _handles(submission)}
+
+    out = ['<h2 class="display">Records</h2>',
+           '<p class="sub">The <b>Ref</b> column is how you name a record on the verdict '
+           'form. To correct one, quote its Ref — for example R3 — and give the field and '
+           'the corrected value.</p>']
     if records:
-        head = ("<tr><th>Row</th><th>Lineage</th><th>Host</th><th>Country</th>"
-                "<th>Site</th><th>Found</th><th>Tested</th><th>Tier</th>"
+        head = ("<tr><th>Ref</th><th>Row</th><th>Lineage</th><th>Host</th>"
+                "<th>Country</th><th>Site</th><th>Found</th><th>Tested</th><th>Tier</th>"
                 "<th>Notes</th></tr>")
         rows = "".join(
             "<tr>"
+            f"<td class='handle'>{esc(handle_for.get(('records', i), ''))}</td>"
             f"<td class='rowno'>{esc((r.get('source') or {}).get('row'))}</td>"
             f"<td class='mono'>{esc(r.get('lineage_name'))}</td>"
             f"<td>{esc(r.get('host_species'))}</td>"
@@ -1337,14 +1483,16 @@ def _records_section(submission: Dict[str, Any]) -> str:
             f"<td>{esc(_number(r.get('number_tested')))}</td>"
             f"<td>{esc(r.get('tier'))}</td>"
             f"<td class='wrapcell'>{esc(r.get('notes'))}</td>"
-            "</tr>" for r in records)
-        out.append(f'<div class="tablewrap"><table>{head}{rows}</table></div>')
+            "</tr>" for i, r in enumerate(records))
+        out.append(f'<div class="tablewrap"><table><thead>{head}</thead>'
+                   f'<tbody>{rows}</tbody></table></div>')
     if vectors:
         out.append("<h3>Vectors</h3>")
-        head = ("<tr><th>Row</th><th>Lineage</th><th>Vector</th><th>Method</th>"
-                "<th>Country</th><th>Tier</th><th>Notes</th></tr>")
+        head = ("<tr><th>Ref</th><th>Row</th><th>Lineage</th><th>Vector</th>"
+                "<th>Method</th><th>Country</th><th>Tier</th><th>Notes</th></tr>")
         rows = "".join(
             "<tr>"
+            f"<td class='handle'>{esc(handle_for.get(('vectors', i), ''))}</td>"
             f"<td class='rowno'>{esc((v.get('source') or {}).get('row'))}</td>"
             f"<td class='mono'>{esc(v.get('lineage_name'))}</td>"
             f"<td>{esc(v.get('vector_species'))}</td>"
@@ -1352,8 +1500,9 @@ def _records_section(submission: Dict[str, Any]) -> str:
             f"<td>{esc(v.get('country'))}</td>"
             f"<td>{esc(v.get('tier'))}</td>"
             f"<td class='wrapcell'>{esc(v.get('notes'))}</td>"
-            "</tr>" for v in vectors)
-        out.append(f'<div class="tablewrap"><table>{head}{rows}</table></div>')
+            "</tr>" for i, v in enumerate(vectors))
+        out.append(f'<div class="tablewrap"><table><thead>{head}</thead>'
+                   f'<tbody>{rows}</tbody></table></div>')
     return "\n".join(out)
 
 
@@ -1498,6 +1647,7 @@ def render_report(
     alignments: Optional[Sequence[Any]] = None,
     submission_id: Optional[str] = None,
     revision: Optional[int] = None,
+    entry: Optional[Any] = None,
 ) -> str:
     """Return the complete HTML document for one submission.
 
@@ -1507,6 +1657,12 @@ def render_report(
     version nobody was looking at, which the ledger accepts and then never treats as
     standing -- so the submission stalls silently while the curator believes they approved
     it. Holds carry forward across revisions, so the failure was one-sided and invisible.
+
+    ``entry`` is this submission's review-ledger entry, when there is one. It supplies the
+    flags and corrections already standing, and with them the ``V1``/``C1`` ids the verdict
+    form asks a curator to type -- see :func:`_standing_section`. Optional, because a report
+    can legitimately be generated outside a submission tree; the section is then omitted
+    rather than the report failing.
     """
     if submission_id and revision is None:
         raise ValueError(
@@ -1526,6 +1682,9 @@ def render_report(
         _disposition(run),
         _summary_section(submission, screen),
         _verdict_section(submission_id, revision),
+        # Directly after the verdict block, because it is what the curator needs while they
+        # are filling that form in -- not six sections later, past the appendix.
+        _standing_section(entry),
         _checks_section(run, (submission.get('provenance') or {}).get('workbook'),
                         submission=submission, screen=screen),
         _names_section(submission),

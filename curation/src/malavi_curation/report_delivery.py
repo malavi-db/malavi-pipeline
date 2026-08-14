@@ -198,6 +198,7 @@ def describe() -> str:
 def build_notice_payload(submission_id: str, *, to: str, submitter_name: str,
                          names: Sequence[str], corrections: Dict[str, str],
                          reference: str = "",
+                         selections: Optional[Dict[str, Any]] = None,
                          issued_at: Optional[int] = None) -> Dict[str, Any]:
     """The payload for a name-confirmation email to the submitter.
 
@@ -208,6 +209,24 @@ def build_notice_payload(submission_id: str, *, to: str, submitter_name: str,
     given. It is the reason this email exists: a submitter who proposed TUMIG06 and was
     granted TUMIG25 must be told, in as many words, because the name they put in their
     paper and in GenBank has to be the granted one.
+
+    ``selections`` is what the submitter chose on the form, so the email can tell them
+    what happens to their RECORDS rather than guess. Four keys, all optional:
+
+    ``stage``             their publication-stage answer, quoted back verbatim
+    ``sending``           their "what are you sending us?" answer, quoted back verbatim
+    ``records_included``  did they say they were sending host and geography records?
+    ``records_held``      are those records waiting on publication?
+
+    The two booleans are decided HERE, in Python, by ``form_metadata.records_are_held``
+    and ``records_were_included`` -- not in Apps Script. The email text branches on them,
+    and a branch that decides whether somebody is told "your records are in the next
+    release" or "please send your records" belongs where it can be tested.
+
+    The two strings are quoted verbatim on purpose. "You selected X" is a quotation, and
+    normalizing the wording would put words in the submitter's mouth -- which matters
+    because the publication-stage question has been asked with two different vocabularies
+    ("Published"/"Unpublished" and "Pre-"/"Post-publication") and both are in the data.
     """
     if not to or "@" not in to:
         raise DeliveryError(
@@ -224,6 +243,7 @@ def build_notice_payload(submission_id: str, *, to: str, submitter_name: str,
         "names": list(names),
         "corrections": dict(corrections or {}),
         "reference": reference or "",
+        "selections": dict(selections or {}),
         "issued_at": int(time.time()) if issued_at is None else int(issued_at),
     }
 
@@ -231,11 +251,12 @@ def build_notice_payload(submission_id: str, *, to: str, submitter_name: str,
 def deliver_name_confirmation(
         submission_id: str, *, to: str, submitter_name: str, names: Sequence[str],
         corrections: Dict[str, str], reference: str = "",
+        selections: Optional[Dict[str, Any]] = None,
         transport: Optional[Callable[[str, bytes], Dict[str, Any]]] = None) -> Delivered:
     """Tell a submitter which lineage names are theirs. Returns what the endpoint did."""
     payload = build_notice_payload(
         submission_id, to=to, submitter_name=submitter_name, names=names,
-        corrections=corrections, reference=reference)
+        corrections=corrections, reference=reference, selections=selections)
     reply = _send(payload, transport)
     return Delivered(
         submission_id=submission_id,

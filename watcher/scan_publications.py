@@ -138,8 +138,8 @@ def normalize_title(title: str) -> str:
 def load_malavi_titles(path: Path) -> Set[str]:
     """Load MalAvi reference titles as a set of normalized strings for exclusion.
 
-    Accepts either the DataTables export JSON (``{"columns": [...], "data": [[...]]}``)
-    that export/build_datatables_json.R produces, or a plain JSON list of titles.
+    Accepts either the DataTables-style JSON (``{"columns": [...], "data": [[...]]}``)
+    that watcher/extract_malavi_refs.R writes, or a plain JSON list of titles.
     Titles without a value are skipped. Since MalAvi has no DOI column (yet), a
     normalized-title match is currently the only "already in MalAvi" signal.
     """

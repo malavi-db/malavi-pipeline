@@ -228,3 +228,89 @@ def test_the_decline_message_still_needs_an_address(cn):
 
 def test_approved_and_declined_are_the_only_states_that_notify(cn):
     assert set(cn.OUTCOMES) == {"approved", "declined"}
+
+
+# --------------------------------------------------------------------------------------
+# One failed delivery must not cost the run its record of the successful ones
+#
+# The bug these pin: history records are appended in memory inside
+# `with ledger.open_ledger(...)`, and that context manager only save()s on a CLEAN exit.
+# An exception escaping the send therefore threw away the "already told them" records of
+# everyone already emailed in the same run -- so the next run emailed them a second time.
+# The mail is irreversible; the guard against repeating it was the thing being discarded.
+# --------------------------------------------------------------------------------------
+
+class _Delivered:
+    """Enough of report_delivery.Delivered for main() to print a line about it."""
+    notified = 1
+
+
+def _two_approved_submissions(tmp_path):
+    """An inbox with two approved, settled submissions, each answerable by email."""
+    inbox = tmp_path / "submissions"
+    entries = {}
+    for suffix in ("A", "B"):
+        submission_id = f"20260101T000000_{suffix}"
+        directory = inbox / submission_id
+        directory.mkdir(parents=True)
+        (directory / "submission.json").write_text(json.dumps({
+            "submitter": {"email": f"{suffix.lower()}@example.edu", "name": f"Dr {suffix}"},
+            "reference": {"title": f"Study {suffix}", "year": 2026},
+        }), encoding="utf-8")
+        entry = make_entry(names=(f"TUMIG1{suffix == 'B' and 9 or 8}",))
+        entry.submission_id = submission_id
+        entries[submission_id] = entry
+    ledger.save(inbox, entries)
+    return inbox
+
+
+def test_a_failed_delivery_keeps_the_records_of_the_ones_that_went(cn, tmp_path,
+                                                                   monkeypatch):
+    from malavi_curation.report_delivery import DeliveryError
+
+    inbox = _two_approved_submissions(tmp_path)
+    monkeypatch.setattr(cn, "submissions_inbox", lambda: inbox)
+    monkeypatch.setattr(cn, "load_config", lambda: CONFIG)
+
+    # A is emailed; the endpoint then fails for B, exactly as an HTTP 500 would.
+    def flaky(submission_id, **_):
+        if submission_id.endswith("_B"):
+            raise DeliveryError("the endpoint returned 500")
+        return _Delivered()
+
+    monkeypatch.setattr(cn, "deliver_name_confirmation", flaky)
+
+    assert cn.main([]) == 1, "a partial run must not report success"
+
+    written = ledger.load(inbox)
+    sent_events = {sid: [h for h in e.history if h.get("event") == "name_confirmation_sent"]
+                   for sid, e in written.items()}
+    assert len(sent_events["20260101T000000_A"]) == 1, (
+        "A was emailed, so the ledger must say so -- otherwise the next run emails Dr A "
+        "a second confirmation")
+    assert sent_events["20260101T000000_B"] == [], "B was never emailed; do not claim it was"
+
+
+def test_the_failed_one_is_retried_and_the_sent_one_is_not(cn, tmp_path, monkeypatch):
+    """The run after a partial failure: B gets its email, A is left alone."""
+    from malavi_curation.report_delivery import DeliveryError
+
+    inbox = _two_approved_submissions(tmp_path)
+    monkeypatch.setattr(cn, "submissions_inbox", lambda: inbox)
+    monkeypatch.setattr(cn, "load_config", lambda: CONFIG)
+
+    attempted = []
+
+    def flaky(submission_id, **_):
+        attempted.append(submission_id)
+        if submission_id.endswith("_B") and len(attempted) == 2:
+            raise DeliveryError("the endpoint returned 500")
+        return _Delivered()
+
+    monkeypatch.setattr(cn, "deliver_name_confirmation", flaky)
+    assert cn.main([]) == 1
+
+    attempted.clear()
+    assert cn.main([]) == 0, "the retry should succeed and report success"
+    assert attempted == ["20260101T000000_B"], (
+        "only the one that failed should be attempted again")

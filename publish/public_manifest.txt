@@ -52,19 +52,38 @@ curation/r/
 curation/templates/
 curation/pyproject.toml
 curation/README.md
+# Every program in curation/ that the RUNBOOK tells someone to run. RUNBOOK.md and
+# BREAK_GLASS.md both ship to the public repo, and BREAK_GLASS names that repo as the
+# recovery route -- so a program missing from this list gives a successor a runbook for
+# something that is not there. Six were missing until 2026-08-14 (close_submission,
+# correct_store, edition_report, ingest_submissions, lift_embargo, publish_reference),
+# all written after this section was, including the one that turns an approval into data.
+# push_pipeline.sh now warns when a curation/*.py is not listed here.
 curation/apply_corrections.py
 curation/batch_intake.py
 curation/build_name_reservations.py
 curation/build_release.py
 curation/build_site_feeds.py
 curation/check_template.py
+curation/close_submission.py
+curation/correct_store.py
+curation/edition_report.py
 curation/enroll.py
 curation/fetch_oa_articles.py
 curation/fetch_submissions.py
 curation/fetch_verdicts.py
+curation/ingest_submissions.py
+curation/lift_embargo.py
 curation/notify_submitters.py
 curation/promote.py
+curation/publish_reference.py
 curation/publish_report.py
+
+# How to issue and install the Drive credential every fetch program authenticates with.
+# Without it a successor has the programs and no way to let them read anything. Checked
+# 2026-08-14: it names no ids, keys or folder names, only malaviadmin@gmail.com, which is
+# the contact address printed on the public site.
+curation/GOOGLE_ACCESS.md
 
 # ---- the Google-side pieces, as templates -----------------------------------
 # Every id and secret in these is a PASTE_ME placeholder; the live values live in

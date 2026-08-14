@@ -80,3 +80,59 @@ def test_the_published_queue_carries_no_intake_directory_name():
     for item in json.loads(text).get("items", []):
         assert build_site_feeds.ID_PATTERN.match(item["id"]), \
             f"{item['id']!r} is not an opaque identifier"
+
+
+# ------------------------------------------------------- B5: only one machine may mint
+
+def test_looking_up_an_id_never_creates_one(tmp_path):
+    """``mint=False`` is the guarantee, not a convention a caller has to remember.
+
+    ``submission_ids.json`` is gitignored, so a CI runner never has it and ``load_ledger``
+    hands back a fresh ``{"next": 1}``. Any program whose output is committed must not mint
+    from that, or the public identifier it publishes is a number invented on a machine that
+    threw the mapping away at the end of the job.
+    """
+    from malavi_curation.submission_id import submission_id_for, load_ledger
+
+    inbox = tmp_path / "submissions"
+    inbox.mkdir()
+
+    assert submission_id_for(inbox, "20260801T120000_Someone", mint=False) is None
+    assert not (inbox / "submission_ids.json").exists(), "nothing was written"
+    assert load_ledger(inbox)["next"] == 1, "and the sequence did not advance"
+
+
+def test_minting_still_works_and_is_idempotent(tmp_path):
+    from malavi_curation.submission_id import submission_id_for
+
+    inbox = tmp_path / "submissions"
+    inbox.mkdir()
+
+    first = submission_id_for(inbox, "20260801T120000_Someone", year=2026)
+    assert first == "MALAVI-SUB-2026-000001"
+    assert submission_id_for(inbox, "20260801T120000_Someone", year=2026) == first
+    # And once minted, the lookup finds it without needing to mint.
+    assert submission_id_for(inbox, "20260801T120000_Someone", mint=False) == first
+
+
+def test_the_feed_builder_publishes_nothing_it_cannot_name(tmp_path, monkeypatch, capsys):
+    """A submission with no identifier is skipped, loudly, rather than given one.
+
+    This is what a CI runner sees for every submission, and it is the correct outcome: on a
+    machine with no id ledger the queue is empty rather than carrying a fabricated
+    numbering that the maintainer's ledger disagrees with.
+    """
+    import importlib.util
+    from malavi_curation.config import repo_root
+
+    spec = importlib.util.spec_from_file_location(
+        "_build_site_feeds", repo_root() / "curation" / "build_site_feeds.py")
+    feeds = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(feeds)
+
+    inbox = tmp_path / "submissions"
+    (inbox / "20260801T120000_Someone").mkdir(parents=True)
+    # No submission_ids.json at all, exactly as a clean runner has it.
+
+    assert feeds._existing_id(inbox, "20260801T120000_Someone") is None
+    assert not (inbox / "submission_ids.json").exists()

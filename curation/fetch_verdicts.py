@@ -83,6 +83,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -161,11 +162,37 @@ def load_applied(path: Path) -> Dict[str, Dict[str, Any]]:
 
 
 def save_applied(path: Path, applied: Dict[str, Dict[str, Any]]) -> None:
-    """Write the applied-ledger, whole, via a temporary file in the same directory."""
+    """Write the applied-ledger, whole, via a temporary file in the same directory.
+
+    **Flushed and fsynced, like ledger.save.** This file is the only thing standing
+    between a re-run and every response in the sheet being applied twice, and it was
+    written without either until 2026-08-10 -- so ``os.replace`` could rename an inode
+    holding zero bytes after a power loss, and the next run would read an empty
+    applied-ledger and re-apply everything. The review ledger it partners has been careful
+    about exactly this since it was written; a durability rule applied rigorously to one
+    file and not to its companion protects neither.
+    """
     payload = {"schema": 1, "updated": ledger.now_utc(), "responses": applied}
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    temporary.replace(path)
+    try:
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+    # Persist the rename itself, not just the data.
+    directory = os.open(str(path.parent), os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    except OSError:
+        pass          # some network filesystems refuse this; the data is already safe
+    finally:
+        os.close(directory)
 
 
 # ======================================================================================
@@ -323,6 +350,20 @@ def apply_action(entries: Dict[str, ledger.Entry], action: verdicts.Action,
                     "detail": f"approved by {correction.approved_by}; the maintainer "
                               f"applies it and the report is regenerated"}
 
+        if action.kind == "close":
+            # The only action here that ends a submission. ledger.decline checks that the
+            # responder is a lead and that the state machine allows the move -- an approved
+            # submission cannot be closed until somebody flags it, which is the rule that
+            # keeps a decline following an objection rather than replacing one.
+            names = list(entry.reserved_names)
+            ledger.decline(entry, action.address, reason=action.reason_code,
+                           note=action.reason_text, at=action.at, config=config,
+                           registry_path=registry_path)
+            return {**base, "status": "applied", "state": entry.state,
+                    "detail": f"closed as {action.reason_code}; reserved names released: "
+                              f"{', '.join(sorted(names)) or 'none'}. notify_submitters "
+                              f"sends the decline notice once the publish hold has run"}
+
         return {**base, "status": "error", "detail": f"unknown action kind {action.kind!r}"}
 
     except ledger.LedgerError as exc:
@@ -419,6 +460,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     # --- apply, under the ledger lock ------------------------------------------------
+    #
+    # The applied-ledger is written INSIDE this block, before the lock is released. It was
+    # written after it until 2026-08-10, which left a window where the review ledger had
+    # the verdicts and the applied-ledger did not: a failed write there -- permissions, a
+    # full disk, an NFS hiccup -- meant the next run re-applied every response. Duplicate
+    # Verdict rows survive that (current_verdicts takes the latest), but override_hold and
+    # retract_verdict refuse with "already resolved" and record_correction files the
+    # correction a second time.
     results: Dict[str, Dict[str, Any]] = {}
     with ledger.open_ledger(inbox, write=not arguments.dry_run) as entries:
         for key, parsed, row in pending:
@@ -434,12 +483,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             label = outcome.get("submission", "-")
             print(f"  [{outcome['status']:<20}] {label}  {outcome.get('detail', '')}")
 
+        # Still holding the lock. open_ledger saves the review ledger on a clean exit, so
+        # if this raises, the body raises, and the review ledger is not written either --
+        # the two files fail together and the run is simply repeatable.
+        if not arguments.dry_run:
+            applied.update(results)
+            save_applied(applied_path, applied)
+
     if arguments.dry_run:
         print("\n[dry-run] nothing was written to the review ledger or the applied ledger.")
         return 0
-
-    applied.update(results)
-    save_applied(applied_path, applied)
 
     # --- summary ---------------------------------------------------------------------
     counts: Dict[str, int] = {}

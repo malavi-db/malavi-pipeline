@@ -61,6 +61,15 @@ but never the interior accessions MalAvi curates), **100% host recall**, and **1
 recall**. Host precision is low by design (papers name many non-host birds; the curator
 prunes). See `benchmark/benchmark_report.md` and `results/METHODS_draft.md`.
 
+> ⚠️ **Those are entity-level numbers on five papers the extractor was developed against.
+> Do not read them as how well this works on a paper nobody has seen.** On the held-out
+> corpus drawn in August 2026 — twelve references, never tuned against — entity recall held
+> up at roughly 100%, and **record-level recall was 10.7%**: the extractor reliably finds
+> *which* accessions, hosts and countries a paper mentions, and rarely assembles them into
+> the lineage × host × site rows MalAvi actually stores. `CURATION_STATUS.md` carries the
+> measured figure and is the one to quote. The gap is not a bug to be tuned away; it is
+> the reason curation is a person's job and the extractor is an assistant.
+
 > Regenerate the gazetteer after a malaviR release bump:
 > `Rscript curation/r/gazetteer.R > curation/src/malavi_curation/data/gazetteer.json`
 

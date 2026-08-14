@@ -52,7 +52,9 @@ from malavi_curation.sequence_check import (                       # noqa: E402
 from malavi_curation.alignment_figure import build_figures         # noqa: E402
 from malavi_curation.checks import render_console, run_checks      # noqa: E402
 from malavi_curation.form_metadata import submitter_from_metadata  # noqa: E402
+from malavi_curation import enrollment                             # noqa: E402
 from malavi_curation import normalize                              # noqa: E402
+from malavi_curation import reference_names                        # noqa: E402
 from malavi_curation.submission_id import submission_id_for        # noqa: E402
 from malavi_curation.naming import suggest_name                    # noqa: E402
 from malavi_curation.report_html import (                          # noqa: E402
@@ -96,7 +98,36 @@ def _lineage_cell(hdr, row, column: str = "LINEAGE_NAME") -> str:
     return normalize.lineage_name(_cell(hdr, row, column)) or ""
 
 
-def screen(workbook: Path, ref: Reference, known_lineages: Optional[set]) -> dict:
+def standing_claims_for(root: Path, cfg: dict, target: Path,
+                        known: Optional[set]) -> Dict[str, str]:
+    """Names claimed by the OTHER submissions in the queue, for the screen to respect.
+
+    Excluded from the answer: the submission being screened (a re-run must not find that
+    this submission already claimed its own names) and anything in
+    ``submissions.exclude``, which is how test and withdrawn submissions are kept out of
+    the reservation feed. Using the same exclusion list here keeps the screen and the
+    public feed answering the same question.
+    """
+    submissions_cfg = cfg.get("submissions") or {}
+    inbox = root / submissions_cfg.get("inbox_dir", "curation/intake/submissions")
+    skip = [entry["id"] for entry in (submissions_cfg.get("exclude") or [])
+            if entry.get("id")]
+    # `target` is either a submission directory or a single workbook inside one. Either
+    # way the directory to exclude is the one directly under the inbox.
+    try:
+        relative = (target if target.is_dir() else target.parent).resolve().relative_to(
+            inbox.resolve())
+        if relative.parts:
+            skip.append(relative.parts[0])
+    except (ValueError, OSError):
+        # Screening something outside the inbox -- a one-off workbook a curator was sent
+        # directly. Nothing to exclude; every claim in the queue still applies.
+        pass
+    return enrollment.standing_claims(inbox, exclude=skip, known=known)
+
+
+def screen(workbook: Path, ref: Reference, known_lineages: Optional[set],
+           claimed_elsewhere: Optional[Dict[str, str]] = None) -> dict:
     """Screen one workbook.
 
     ``known_lineages`` is the set of names MalAvi already owns, or **None** when the
@@ -106,6 +137,14 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set]) -> dic
     "is this name already taken?" -- report a clean pass for a name MalAvi already has.
     None makes the check report as skipped, with a reason, which is what every other
     unavailable check in this pipeline does.
+
+    ``claimed_elsewhere`` maps an upper-cased name to the submission directory that
+    claimed it first -- see :func:`enrollment.standing_claims`. A released name and a
+    claimed name are different findings and are reported separately: the first is settled
+    and the submitter must rename, the second is a queue position that a curator may need
+    to check against arrival dates. Both make the name unavailable for the free-name
+    search below, which is the failure that mattered: without this, two submitters were
+    offered the same replacement name and both were told it was confirmed.
     """
     import openpyxl
     wb = openpyxl.load_workbook(workbook, data_only=True)
@@ -166,6 +205,17 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set]) -> dic
                 # The suggestion is appended later, once the free name is worked out.
                 issue("warn", "name_already_in_malavi",
                       f"proposed name {name} is ALREADY a MalAvi lineage name.", name)
+            elif claimed_elsewhere and name.upper() in claimed_elsewhere:
+                # Not "already in MalAvi" -- nobody has been granted this yet. It is a
+                # queue position: an earlier submission asked for it first, and priority
+                # goes by the date the submission arrived. Reported separately so the
+                # curator can check the dates rather than tell a submitter their name is
+                # taken by a release that does not contain it.
+                issue("warn", "name_claimed_by_another_submission",
+                      f"proposed name {name} was already claimed by submission "
+                      f"{claimed_elsewhere[name.upper()]}, which is still in the queue. "
+                      f"Priority goes to whichever arrived first -- check the dates in "
+                      f"docs/assets/data/reserved_names.json before granting it.", name)
             for a in accs:
                 if not ACCESSION_RE.match(a.upper()):
                     issue("warn", "accession_malformed",
@@ -239,11 +289,113 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set]) -> dic
 
     if SHEET_REFERENCE in wb.sheetnames:
         hdr, body = _header_and_body(wb[SHEET_REFERENCE], "REFERENCE_NAME")
-        out["references"] = [_cell(hdr, r, "REFERENCE_NAME") for r in body]
+        names = [_cell(hdr, r, "REFERENCE_NAME") for r in body]
+        out["references"] = names
         if not body:
+            # Still an error, and still for an unpublished study. What a submission needs
+            # is not a *publication* but a citation key: every record row points at one,
+            # and records with nothing to point at cannot be loaded. An unpublished study
+            # supplies it as "<Authors> unpubl" and leaves the year, journal and pages
+            # blank -- see malavi_curation.reference_names.
             issue("error", "reference_missing",
-                  "no Reference row: every submission needs its publication.")
+                  "no Reference row: every submission needs a reference name. If the "
+                  "study is not published yet, name it '<Authors> unpubl' (for example "
+                  "'Barrow et al unpubl') and leave the year, journal and pages blank.")
+        # The unpublished marker has to be spelled MalAvi's way or a curator filtering
+        # unpublished records will quietly miss this study. Warning, not blocking: the
+        # name is a curator's to settle, and a misspelling is fixed in a correction
+        # rather than by sending the whole submission back.
+        for name in names:
+            problem = reference_names.problem_with(name)
+            if problem:
+                issue("warn", "reference_unpubl_malformed", problem, name)
     return out
+
+
+def offer_free_names(reports: List[dict], known: Optional[set],
+                     claimed_elsewhere: Optional[Dict[str, str]],
+                     submissions: List[dict]) -> None:
+    """Record a free alternative for every proposed name that is not available.
+
+    Mutates each report in place, adding ``name_suggestions`` and ``not_new_lineages``.
+
+    Extracted from main() so it can be tested directly: the thing it must never do is
+    offer submission B a name submission A has already been offered, and that is worth a
+    test that does not need a whole run to reach it.
+    """
+    # A proposed name MalAvi already owns gets a free alternative recorded here, on the
+    # screen itself, rather than computed when a report happens to be rendered. It has to
+    # be durable: a curator approves a submission *including* this correction, so what was
+    # suggested is part of what was agreed, and the name that is finally reserved and
+    # released has to be traceable to the moment it was offered.
+    for report_dict in reports:
+        # Both codes want a free alternative offered. A name another submission claimed
+        # first is just as unavailable to this submitter as one the release already holds
+        # -- the difference is only who they have to be told about.
+        taken = {i.get("subject") for i in report_dict.get("issues", [])
+                 if i.get("code") in ("name_already_in_malavi",
+                                      "name_claimed_by_another_submission")
+                 and i.get("subject")}
+
+        # A name being taken is NOT on its own a reason to suggest a new one. If the
+        # sequence under that name is the lineage that already holds it, the submission is
+        # a record of a known lineage, not a new one -- and renaming it would create a
+        # duplicate of something MalAvi already has. Offering a rename here produced two
+        # pages of the same report giving opposite instructions.
+        already_a_known_lineage = {
+            i.get("subject") for i in report_dict.get("issues", [])
+            if i.get("code") == "sequence_is_known_lineage" and i.get("subject")}
+        # Which MalAvi lineage each one actually matched. Recording only the proposed name
+        # made the report say "this sequence is the TUMIG50 MalAvi already has" about a
+        # name MalAvi has never held -- and told the curator to file it under a lineage
+        # that does not exist, which is how a duplicate gets created.
+        matched = {}
+        for entry_seq in report_dict.get("sequences", []):
+            label = entry_seq.get("label")
+            if label in already_a_known_lineage:
+                nearest = (entry_seq.get("nearest") or [{}])[0]
+                matched[label] = nearest.get("lineage") or ""
+        report_dict["not_new_lineages"] = matched
+
+        if not taken or known is None:
+            continue
+        suggestions = {}
+        # Everything that is not free: what the release owns, what THIS submission is
+        # claiming (so two taken names cannot both be offered the same free number), and
+        # what other submissions in the queue have already claimed. The last of those was
+        # missing, and it is the one that could hand two submitters the same name.
+        claimed_here = set(known) | set(claimed_elsewhere or {}) | {
+            str(n) for n in (report_dict.get("lineages") or {})}
+        for name, entry in (report_dict.get("lineages") or {}).items():
+            if name not in taken or name in already_a_known_lineage:
+                continue
+            host = (entry or {}).get("host_species") or ""
+            if not host:
+                # The workbook's NewLineages sheet carries the host; fall back to the
+                # first host record for this lineage rather than guessing an acronym.
+                for sub in submissions:
+                    for record in sub.get("records") or []:
+                        if record.get("lineage_name") == name and record.get("host_species"):
+                            host = record["host_species"]
+                            break
+                    if host:
+                        break
+            proposal = suggest_name(host, sorted(claimed_here))
+            if proposal.ok and proposal.proposal:
+                suggestions[name] = proposal.proposal
+                claimed_here.add(proposal.proposal)
+        if suggestions:
+            report_dict["name_suggestions"] = suggestions
+            # Put the alternative in the finding a curator actually reads, rather than
+            # only on the summary page.
+            for entry_issue in report_dict.get("issues", []):
+                free_name = suggestions.get(entry_issue.get("subject"))
+                if free_name and entry_issue.get("code") in (
+                        "name_already_in_malavi", "name_claimed_by_another_submission"):
+                    entry_issue["message"] += (
+                        f" Suggesting {free_name} for this lineage.")
+            for taken_name, free_name in suggestions.items():
+                print(f"   [suggestion] {taken_name} is taken -> {free_name}")
 
 
 def main(argv=None) -> int:
@@ -339,12 +491,21 @@ def main(argv=None) -> int:
                 # something the curator report can say out loud.
                 print(f"   [warn] could not read {metadata_path.name}: {exc}")
 
+    # What other submissions in the queue have already claimed. Read once, here, rather
+    # than per workbook. The directory being screened is excluded so it cannot collide
+    # with itself on a re-run: check_template.py is re-run after every correction, and by
+    # then this submission's own names are in its own screen.json.
+    claimed_elsewhere = standing_claims_for(root, cfg, target, known)
+    if claimed_elsewhere:
+        print(f"{len(claimed_elsewhere)} name(s) are claimed by other submissions in the "
+              f"queue and are treated as unavailable.\n")
+
     reports = []
     submissions = []
     build_failures: List[str] = []
     worst = 0
     for book in books:
-        rep = screen(book, ref, known)
+        rep = screen(book, ref, known, claimed_elsewhere)
         reports.append(rep)
 
         # The same workbook, as a submission conforming to schemas/submission.schema.json.
@@ -392,71 +553,7 @@ def main(argv=None) -> int:
             worst = max(worst, 2)
         print()
 
-    # A proposed name MalAvi already owns gets a free alternative recorded here, on the
-    # screen itself, rather than computed when a report happens to be rendered. It has to
-    # be durable: a curator approves a submission *including* this correction, so what was
-    # suggested is part of what was agreed, and the name that is finally reserved and
-    # released has to be traceable to the moment it was offered.
-    for report_dict in reports:
-        taken = {i.get("subject") for i in report_dict.get("issues", [])
-                 if i.get("code") == "name_already_in_malavi" and i.get("subject")}
-
-        # A name being taken is NOT on its own a reason to suggest a new one. If the
-        # sequence under that name is the lineage that already holds it, the submission is
-        # a record of a known lineage, not a new one -- and renaming it would create a
-        # duplicate of something MalAvi already has. Offering a rename here produced two
-        # pages of the same report giving opposite instructions.
-        already_a_known_lineage = {
-            i.get("subject") for i in report_dict.get("issues", [])
-            if i.get("code") == "sequence_is_known_lineage" and i.get("subject")}
-        # Which MalAvi lineage each one actually matched. Recording only the proposed name
-        # made the report say "this sequence is the TUMIG50 MalAvi already has" about a
-        # name MalAvi has never held -- and told the curator to file it under a lineage
-        # that does not exist, which is how a duplicate gets created.
-        matched = {}
-        for entry_seq in report_dict.get("sequences", []):
-            label = entry_seq.get("label")
-            if label in already_a_known_lineage:
-                nearest = (entry_seq.get("nearest") or [{}])[0]
-                matched[label] = nearest.get("lineage") or ""
-        report_dict["not_new_lineages"] = matched
-
-        if not taken or known is None:
-            continue
-        suggestions = {}
-        # Names this submission is itself claiming, so two taken names cannot both be
-        # offered the same free number.
-        claimed_here = set(known) | {
-            str(n) for n in (report_dict.get("lineages") or {})}
-        for name, entry in (report_dict.get("lineages") or {}).items():
-            if name not in taken or name in already_a_known_lineage:
-                continue
-            host = (entry or {}).get("host_species") or ""
-            if not host:
-                # The workbook's NewLineages sheet carries the host; fall back to the
-                # first host record for this lineage rather than guessing an acronym.
-                for sub in submissions:
-                    for record in sub.get("records") or []:
-                        if record.get("lineage_name") == name and record.get("host_species"):
-                            host = record["host_species"]
-                            break
-                    if host:
-                        break
-            proposal = suggest_name(host, sorted(claimed_here))
-            if proposal.ok and proposal.proposal:
-                suggestions[name] = proposal.proposal
-                claimed_here.add(proposal.proposal)
-        if suggestions:
-            report_dict["name_suggestions"] = suggestions
-            # Put the alternative in the finding a curator actually reads, rather than
-            # only on the summary page.
-            for entry_issue in report_dict.get("issues", []):
-                free_name = suggestions.get(entry_issue.get("subject"))
-                if entry_issue.get("code") == "name_already_in_malavi" and free_name:
-                    entry_issue["message"] += (
-                        f" Suggesting {free_name} for this lineage.")
-            for taken_name, free_name in suggestions.items():
-                print(f"   [suggestion] {taken_name} is taken -> {free_name}")
+    offer_free_names(reports, known, claimed_elsewhere, submissions)
 
     if build_failures:
         # An unreadable workbook means the report below describes less than was submitted,
@@ -513,9 +610,13 @@ def main(argv=None) -> int:
             # submission rather than to whatever they typed.
             public_id = submission_id_for(target.parent, target.name) \
                 if target.parent.name == "submissions" else None
-            # The revision this report describes. Read from the ledger where one exists,
-            # so the verdict link names the version the curator is actually looking at.
+            # The revision this report describes, and the flags and corrections already
+            # standing on it. Read from the ledger where one exists, so the verdict link
+            # names the version the curator is actually looking at -- and so the report can
+            # print the V1/C1 ids the verdict form asks them to type, which exist nowhere a
+            # curator can see.
             revision = 1
+            entry = None
             if public_id:
                 try:
                     from malavi_curation.ledger import load as load_ledger
@@ -524,7 +625,8 @@ def main(argv=None) -> int:
                         revision = entry.revision
                 except Exception as exc:                      # noqa: BLE001
                     print(f"   [warn] could not read the review ledger ({exc}); "
-                          f"the report will say revision 1")
+                          f"the report will say revision 1 and will not list any "
+                          f"standing flags")
 
             report = render_report(
                 submissions[0], run,
@@ -533,6 +635,7 @@ def main(argv=None) -> int:
                 metadata=metadata,
                 submission_id=public_id,
                 revision=revision,
+                entry=entry,
                 alignments=alignments,
             )
             intake_root = root / "curation" / "intake"

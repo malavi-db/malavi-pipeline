@@ -70,8 +70,8 @@ var CURATORS = [
   'vaellis@udel.edu'
 ];
 
-// The submission form. Used by testNotification and installTrigger; the trigger itself
-// gets the form from the event.
+// The submission form. Used by installTrigger; the trigger itself gets the form from the
+// event, and testNotification does not need it at all.
 //
 // The live value is in CUSTODY_PRIVATE.md, not here, because this file is published. It is
 // not a credential -- opening the edit URL still requires being signed in as someone with
@@ -167,6 +167,8 @@ function notifyCurators(a) {
       + (a.stage ? ' (' + a.stage.toLowerCase() + ')' : '');
 
   var lines = [
+    '[this is an automatic email]',
+    '',
     'A new submission arrived on the MalAvi form.',
     '',
     'Received:     ' + Utilities.formatDate(a.received, 'GMT', "yyyy-MM-dd HH:mm 'GMT'"),
@@ -204,8 +206,8 @@ function notifyCurators(a) {
   lines.push('never arrives, the screening job has not run -- tell the maintainer.');
   lines.push('');
   lines.push('--');
-  lines.push('Confidential. A submission may contain unpublished sequences whose author');
-  lines.push('has told nobody else. Please do not forward this email.');
+  lines.push('Confidential. A submission may contain unpublished sequences. Please do not');
+  lines.push('forward this email.');
 
   // One send per curator rather than one with several recipients, so nobody learns who
   // else is on the list and a bad address cannot take the whole send down.
@@ -219,21 +221,20 @@ function acknowledgeSubmitter(a) {
   if (!a.email) return;
 
   var body = [
-    'Thank you — your submission to MalAvi has been received.',
+    '[this is an automatic email]',
+    '',
+    'Thank you! Your submission to MalAvi has been received.',
     '',
     'Received: ' + Utilities.formatDate(a.received, 'GMT', "yyyy-MM-dd HH:mm 'GMT'"),
     '',
-    'A curator will look at it. If anything needs clarifying, someone will write to you',
-    'at this address.',
+    'A curator will look at it. If anything needs clarifying, a curator will write to you',
+    'at this email address.',
     '',
-    'If you proposed new lineage names, the date above is what establishes your claim on',
-    'them: where two people propose the same name, the earlier submission takes it. The',
-    'names are confirmed when a release is published, not before.',
-    '',
-    'Nothing you sent is made public by submitting it. Unpublished data stays private.',
+    'Thanks again for submitting data to MalAvi.',
     '',
     '--',
-    'MalAvi'
+    'MalAvi',
+    'https://malavi-db.github.io/'
   ].join('\n');
 
   GmailApp.sendEmail(a.email, 'MalAvi: submission received', body, { name: 'MalAvi' });

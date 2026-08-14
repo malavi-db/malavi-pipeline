@@ -26,11 +26,16 @@ Passeriformes flag and its twelve region columns are all computable from the hos
 vector records, and computing them at build time is the only way they cannot drift out of
 agreement with the records they summarize. The 2026-03-23 release shows why that matters:
 measured against its own record tables, **248 lineages carry host records and no region
-flag at all**, and 266 have records supporting a region the summary does not flag, against
-only 25 where the summary flags a region the records do not support. That asymmetry is the
+flag at all**, and 279 have records supporting a region the summary does not flag, against
+**zero** where the summary flags a region the records do not support. That asymmetry is the
 signature of a summary that stopped being regenerated while records kept arriving under
 it. Rebuilding corrects all of it, and ``diff_against_release`` reports every correction
 rather than making it quietly.
+
+(Those three numbers were 248 / 266 / 25 when this was written. Re-measured 2026-08-10:
+the 25 regressions are gone, closed by the ``authored`` rows added to
+``country_regions.csv``, so the rebuild now loses nothing at all. They are worth
+re-measuring rather than trusting -- the recipe is in ``diff_against_release``.)
 
 **Every derivation here was measured against the legacy release, not assumed.** Where a
 rule had more than one plausible reading, both were tried and the one that reproduces the
@@ -68,6 +73,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from .country_regions import (
     REGION_COLUMNS, load_region_map, region_for, rows_needing_review, unmapped_countries,
 )
+from . import reference_names
 from .release_store import TABLES, read_store, store_dir
 
 # The Grand Lineage Summary's columns, in the release's own order. The first five and the
@@ -218,10 +224,23 @@ def fasta_label(lineage: Dict[str, Any]) -> str:
     """The alignment tip label for one lineage.
 
     ``<prefix>_<LINEAGE>`` for a lineage with no morphospecies, and
-    ``<prefix>_<LINEAGE>_<GENUS>_<SPECIES>`` for one that has been linked to a described
+    ``<prefix>_<LINEAGE>_<Genus>_<epithet>`` for one that has been linked to a described
     species. A genus outside the three known ones contributes no prefix rather than a
     guessed letter, so an unrecognized genus is visible in the output instead of being
     silently filed under someone else's letter.
+
+    **``SPECIES_NAME`` already holds the binomial, so the genus is not prepended.** All
+    238 lineages that carry a species hold one like ``"Leucocytozoon toddi"``, and
+    prepending ``GENUS_NAME`` produced ``L_ACCFRA01_Leucocytozoon_Leucocytozoon toddi``:
+    a duplicated genus, and a space. Almost every FASTA reader truncates the sequence id
+    at the first whitespace, so 238 of the 5,368 records in every release shipped an id
+    that silently lost everything after the genus -- and two ``TUPHI01`` rows then
+    truncated to the *same* id without the build's duplicate-label check noticing, because
+    it compares full labels. The seven ``GENUS_NAME = "N/A"`` lineages also contributed a
+    ``/``. Both classes of character are gone now that the binomial is used directly.
+
+    Whitespace inside the binomial becomes ``_`` rather than being stripped, so the label
+    stays reversible: ``Leucocytozoon_toddi`` is still readable as two words.
     """
     lineage_name = _text(lineage.get("LINEAGE_NAME"))
     genus = _text(lineage.get("GENUS_NAME"))
@@ -229,7 +248,7 @@ def fasta_label(lineage: Dict[str, Any]) -> str:
     prefix = GENUS_PREFIXES.get(genus)
     label = f"{prefix}_{lineage_name}" if prefix else lineage_name
     if species:
-        label = f"{label}_{genus}_{species}"
+        label = f"{label}_{'_'.join(species.split())}"
     return label
 
 
@@ -370,6 +389,69 @@ def build_release(store: Dict[str, List[Dict[str, Any]]], release: str,
             f"{len(duplicate_labels)} alignment tip label(s) are not unique, and a reader "
             f"will drop or rename the duplicates: {', '.join(duplicate_labels)}")
 
+    # ---- referential and arithmetic checks on the records themselves -----------------
+    #
+    # Added 2026-08-10 after a review found all three shipping silently in the seeded
+    # store. Warnings rather than refusals: every one of them is a curator's decision to
+    # make about somebody's data, and a release that refuses to build over a citation
+    # typo would simply be overridden. What they must not do is go unnoticed.
+    #
+    # These name studies and their faults, so they belong in the operator's report and the
+    # gitignored release report. They must NOT reach the public site or malaviR, where a
+    # data fault becomes public blame attached to a contributor.
+
+    # A record citing a reference the release does not contain. The deliberate
+    # "<Authors> unpubl" convention is excluded: those rows have no reference row BY
+    # DESIGN -- there is nothing to cite until the study appears.
+    known_references = {_text(row.get("REFERENCE_NAME"))
+                        for row in store.get("references", [])}
+    orphan_citations: Dict[str, int] = defaultdict(int)
+    blank_citations = 0
+    for table_name in ("host_records", "vector_records", "alt_names", "morpho_species"):
+        for row in store.get(table_name, []):
+            cited = _text(row.get("REFERENCE_NAME"))
+            if not cited:
+                blank_citations += 1
+            elif cited not in known_references and not reference_names.is_unpublished(cited):
+                orphan_citations[cited] += 1
+    if orphan_citations:
+        listed = ", ".join(f"{name} ({count} row(s))"
+                           for name, count in sorted(orphan_citations.items()))
+        warnings.append(
+            f"{len(orphan_citations)} reference name(s) are cited by records but have no "
+            f"row in references.csv, and are not marked unpublished: {listed}")
+    if blank_citations:
+        warnings.append(
+            f"{blank_citations} record row(s) carry no REFERENCE_NAME at all, so they "
+            f"are published with no attribution")
+
+    # REFERENCE_NAME is the join key malaviR and the site use, so a duplicate fans out
+    # every join on it 2x. The build already checks LINEAGE_NAME for the same reason.
+    reference_counts: Dict[str, int] = defaultdict(int)
+    for row in store.get("references", []):
+        reference_counts[_text(row.get("REFERENCE_NAME"))] += 1
+    repeated_references = sorted(name for name, count in reference_counts.items()
+                                 if count > 1)
+    if repeated_references:
+        warnings.append(
+            f"{len(repeated_references)} reference name(s) appear more than once in "
+            f"references.csv, so any join on the name fans out: "
+            f"{', '.join(repeated_references)}")
+
+    # More positives than samples. Not arithmetic this program can correct -- which of the
+    # two numbers is wrong is a question for the authors -- but it must be visible.
+    impossible = []
+    for row in hosts:
+        found, tested = _text(row.get("NUMBER_FOUND")), _text(row.get("NUMBER_TESTED"))
+        if found.isdigit() and tested.isdigit() and int(found) > int(tested):
+            impossible.append(f"{_text(row.get('RECORD_ID'))} "
+                              f"({_text(row.get('LINEAGE_NAME'))}, {found}/{tested})")
+    if impossible:
+        warnings.append(
+            f"{len(impossible)} host record(s) report more infections than birds tested: "
+            f"{', '.join(impossible[:10])}"
+            + (f", and {len(impossible) - 10} more" if len(impossible) > 10 else ""))
+
     # An alignment whose rows are not all the same width is not an alignment. The store
     # holds gapped sequences at a fixed width (479 bp in the seeded release), so more than
     # one width means a sequence was inserted ungapped or against a different reference.
@@ -449,28 +531,10 @@ def diff_against_release(summary: Sequence[Dict[str, str]], reference_csv: Path
     }
 
 
-def build_from_repository(release: Optional[str] = None,
-                          destination: Optional[Path] = None,
-                          reference_csv: Optional[Path] = None,
-                          root: Optional[Path] = None) -> Dict[str, Any]:
-    """Build a release from the repository's own store, and diff it if asked.
-
-    ``release`` defaults to today, which is how MalAvi has always stamped a release.
-    """
-    from .config import repo_root as _repo_root
-    root = Path(root) if root else _repo_root()
-    release = release or date.today().isoformat()
-    destination = Path(destination) if destination else root / "data" / "releases"
-
-    store = read_store(store_dir(root))
-    if not any(store.values()):
-        raise ValueError(
-            f"{store_dir(root)} holds no records. Seed the store before building a "
-            f"release (RUNBOOK step 3b).")
-
-    report = build_release(store, release, destination)
-    if reference_csv:
-        report["diff"] = diff_against_release(derive_summary(store), Path(reference_csv))
-    (destination / f"release_report_{release}.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return report
+# build_from_repository() was removed on 2026-08-10. It built a release straight from
+# data/records/ and wrote a release report WITHOUT consulting release_gate or the review
+# ledger -- the exact ungated path release_gate was written to close, left in place as a
+# public function with zero callers in source, tests or the RUNBOOK. Its report also had
+# no `approval` block, so two report shapes could diverge.
+#
+# Build a release through curation/build_release.py, which is gated.

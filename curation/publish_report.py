@@ -57,6 +57,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from malavi_curation import ledger                                    # noqa: E402
 from malavi_curation.config import load_config, repo_root             # noqa: E402
+from malavi_curation.submission_id import (                           # noqa: E402
+    ID_PATTERN, is_opaque, load_ledger as load_id_ledger,
+)
 from malavi_curation.report_delivery import (                         # noqa: E402
     DeliveryError, deliver, describe,
 )
@@ -69,6 +72,38 @@ def submissions_inbox() -> Path:
     config = load_config()
     return repo_root() / (config.get("submissions", {}) or {}).get(
         "inbox_dir", "curation/intake/submissions")
+
+
+def resolve(inbox: Path, given: str) -> tuple:
+    """(directory name, opaque public id) for whatever the operator typed.
+
+    These are two different strings and conflating them was a real bug. The directory is
+    `<timestamp>_<slugified submitter name>` -- it carries a person's NAME. The public id
+    is `MALAVI-SUB-YYYY-NNNNNN` and is what the review ledger is keyed by.
+
+    The directory is only ever used to find files on this machine. The public id is what
+    goes into the Drive filename, the curator email subject, and the ledger -- because a
+    report called `20260727T233146_Jane_Smith_report.pdf` sitting in a shared folder, and
+    an unrecallable email subject naming her, tells every curator that Jane Smith has
+    unpublished data on a particular parasite. That is exactly what the opaque id exists
+    to prevent, and publish_report.gs claims in as many words that the subject "does not
+    name the submitter".
+    """
+    ids = (load_id_ledger(inbox).get("ids") or {})
+    if is_opaque(given):
+        for directory, record in ids.items():
+            if record.get("id") == given:
+                return directory, given
+        raise DeliveryError(f"No submission has the id {given}.")
+
+    record = ids.get(given)
+    if not record or not record.get("id"):
+        raise DeliveryError(
+            f"{given} has no minted public id yet, so it cannot be published without "
+            f"putting the directory name -- which carries the submitter's own name -- "
+            f"into Drive and into a curator's inbox. Run fetch_submissions.py or "
+            f"build_site_feeds.py first; either mints one.")
+    return given, record["id"]
 
 
 def find_report(inbox: Path, submission_id: str) -> Path:
@@ -119,14 +154,14 @@ def already_published(entries, submission_id: str) -> Optional[str]:
     return None
 
 
-def publish_one(inbox: Path, submission_id: str, *, notify: bool, dry_run: bool,
-                entries) -> bool:
+def publish_one(inbox: Path, directory: str, public_id: str, *, notify: bool,
+                dry_run: bool, entries) -> bool:
     """Publish one report. Returns True when something was actually sent."""
-    report = find_report(inbox, submission_id)
+    report = find_report(inbox, directory)
     size_kb = report.stat().st_size / 1024
-    previous = already_published(entries, submission_id)
+    previous = already_published(entries, public_id)
 
-    print(f"  {submission_id}")
+    print(f"  {public_id}")
     print(f"    report : {_display(report)} ({size_kb:.0f} KB)")
     if previous:
         print(f"    note   : already published once (file {previous}); this replaces it "
@@ -136,7 +171,7 @@ def publish_one(inbox: Path, submission_id: str, *, notify: bool, dry_run: bool,
         print("    [dry-run] nothing sent")
         return False
 
-    result = deliver(submission_id, report.read_bytes(), notify=notify)
+    result = deliver(public_id, report.read_bytes(), notify=notify)
     print(f"    {result.action}: {result.url}")
     if result.notified:
         print(f"    emailed {result.notified} curator(s)")
@@ -146,7 +181,7 @@ def publish_one(inbox: Path, submission_id: str, *, notify: bool, dry_run: bool,
 
     # Record it. A publish that happened but was not written down is indistinguishable
     # from one that never happened, the next time somebody asks why a curator is silent.
-    entry = entries.get(submission_id)
+    entry = entries.get(public_id)
     if entry is not None:
         entry.history.append({
             "event": "report_published",
@@ -157,8 +192,8 @@ def publish_one(inbox: Path, submission_id: str, *, notify: bool, dry_run: bool,
             "notified": result.notified,
         })
     else:
-        print("    NOTE: no ledger entry for this submission, so the publish was not "
-              "recorded. That is expected for a demo or a hand-made directory.")
+        print("    WARNING: no ledger entry, so this publish was NOT recorded and will "
+              "be sent again on the next --all-pending run. Run enroll.py.")
     return True
 
 
@@ -194,21 +229,31 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         with ledger.open_ledger(inbox, write=not arguments.dry_run) as entries:
             if arguments.all_pending:
-                targets = sorted(
-                    directory.name for directory in inbox.iterdir()
-                    if directory.is_dir()
-                    and (directory / REPORT_NAME).is_file()
-                    and not already_published(entries, directory.name))
+                # Resolve every candidate to its public id BEFORE testing whether it has
+                # been published. Testing the directory name against a ledger keyed by
+                # minted ids always missed, so every report was re-sent on every run and
+                # the "no ledger entry" note made it look intentional.
+                candidates = []
+                for directory in sorted(inbox.iterdir()):
+                    if not directory.is_dir() or not (directory / REPORT_NAME).is_file():
+                        continue
+                    try:
+                        candidates.append(resolve(inbox, directory.name))
+                    except DeliveryError as exc:
+                        print(f"  skipping {directory.name}: {exc}")
+                targets = [(d, pid) for d, pid in candidates
+                           if not already_published(entries, pid)]
                 if not targets:
                     print("\nnothing pending: every rendered report has been published.")
                     return 0
                 print(f"\n{len(targets)} report(s) pending")
             else:
-                targets = list(arguments.submission_id)
+                targets = [resolve(inbox, given) for given in arguments.submission_id]
 
             sent = 0
-            for submission_id in targets:
-                if publish_one(inbox, submission_id, notify=not arguments.no_notify,
+            for directory, public_id in targets:
+                if publish_one(inbox, directory, public_id,
+                               notify=not arguments.no_notify,
                                dry_run=arguments.dry_run, entries=entries):
                     sent += 1
 

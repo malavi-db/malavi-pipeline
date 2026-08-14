@@ -90,9 +90,38 @@ function createSubmissionForm() {
 
   form.addMultipleChoiceItem()
       .setTitle('Are you submitting published or unpublished data?')
-      .setHelpText('Unpublished data is welcome. It is held privately and is not shown on ' +
-                   'the public queue.')
+      .setHelpText('Unpublished data are welcome. They are held privately and not ' +
+                   'shown on the public queue.')
       .setChoiceValues(['Published', 'Unpublished'])
+      .setRequired(true);
+
+  // NEW. Asked of everyone, though it only means anything to a submitter who answered
+  // "Unpublished" above. Google Forms can branch on the previous answer, but branching
+  // puts the question on its own page and every other question here is flat -- a third
+  // "not applicable" choice costs a published submitter one click and keeps one shape.
+  //
+  // This does not introduce a convention. MalAvi has held unpublished records for years,
+  // cited as "<Authors> unpubl" with no row in the reference table: 838 such rows across
+  // 62 studies in the seed release. What is new is ASKING, instead of a curator deciding
+  // on the submitter's behalf whether their unpublished records should go public.
+  //
+  // The answer is also what finally sets Entry.embargoed. Until this question existed
+  // nothing wrote that field, so a pre-publication submitter who went quiet was timed out
+  // at awaiting_submitter_timeout_days and their reserved lineage names were handed to
+  // somebody else -- the precise harm the field was added to prevent.
+  //
+  // build_site_feeds._records_embargo() parses the LEADING WORD of the answer, so these
+  // three values must keep starting with "Add", "Hold" and "Not".
+  form.addMultipleChoiceItem()
+      .setTitle('If your data are unpublished, may we add the records to MalAvi now?')
+      .setHelpText('Unpublished records go in credited as, for example, ' +
+                   '"Ellis et al unpubl", and are renamed to the real citation once ' +
+                   'you tell us the study is published. Your lineage names are ' +
+                   'confirmed by a curator either way. This question decides when the ' +
+                   'host and geography records become public.')
+      .setChoiceValues(['Add them now, credited as unpublished',
+                        'Hold them until I confirm the study is accepted',
+                        'Not applicable - my data are already published'])
       .setRequired(true);
 
   form.addMultipleChoiceItem()

@@ -101,6 +101,79 @@ class TestScreenIssues:
                                        known_lineages={"SGS1"})
         assert "name_already_in_malavi" not in _codes(report)
 
+    # A name is unavailable two ways, and they are different findings. "MalAvi already has
+    # it" is settled. "An earlier submission asked for it and is still under review" is a
+    # queue position, decided by arrival date -- and until this was wired in, the screen
+    # could not see it at all: two submitters could each be told the same name was theirs.
+    def test_a_name_another_submission_claimed_is_reported(self, check_template,
+                                                           reference, tmp_path):
+        report = check_template.screen(
+            _workbook(tmp_path), reference, known_lineages={"SGS1"},
+            claimed_elsewhere={"TUMIG19": "20260101T000000_Someone"})
+        assert "name_claimed_by_another_submission" in _codes(report)
+        assert "name_already_in_malavi" not in _codes(report), (
+            "the release does not hold this name; saying so would send the submitter "
+            "looking for it in a table that does not contain it")
+        message = next(i["message"] for i in report["issues"]
+                       if i["code"] == "name_claimed_by_another_submission")
+        assert "20260101T000000_Someone" in message, "say which submission, so it can be checked"
+
+
+def _screened(code="name_already_in_malavi", name="TUMIG19",
+              host="Turdus migratorius"):
+    """A screen report carrying one unavailable name, as offer_free_names expects it."""
+    return {"issues": [{"code": code, "subject": name, "severity": "warn",
+                        "message": f"{name} is not available."}],
+            "lineages": {name: {"host_species": host}},
+            "sequences": []}
+
+
+class TestFreeNameSuggestions:
+    """What gets offered in place of a name that is not available.
+
+    Driven through offer_free_names directly rather than through a whole run: the thing
+    it must never do is offer submission B a name submission A has already been offered,
+    and that failure does not need a workbook to reach.
+    """
+
+    def test_a_claimed_name_is_not_offered_to_the_next_submitter(self, check_template):
+        """The failure that mattered. Two submitters were each told the same name was
+        theirs, and it surfaced at ingest -- possibly after one had used it in GenBank."""
+        claimed = {"TUMIG20": "20260101T000000_Someone",
+                   "TUMIG21": "20260101T000000_Someone"}
+        report = _screened()
+        check_template.offer_free_names([report], {"TUMIG19"}, claimed, [])
+        offered = set((report.get("name_suggestions") or {}).values())
+        assert offered, "a taken name should still get an alternative"
+        assert not offered & set(claimed), (
+            f"offered {offered}, which another submission has already claimed")
+
+    def test_a_name_claimed_by_another_submission_still_gets_an_alternative(
+            self, check_template):
+        report = _screened(code="name_claimed_by_another_submission")
+        check_template.offer_free_names(
+            [report], {"SGS1"}, {"TUMIG19": "20260101T000000_Someone"}, [])
+        assert report.get("name_suggestions") == {"TUMIG19": "TUMIG20"}
+
+    def test_the_alternative_reaches_the_finding_a_curator_reads(self, check_template):
+        """The suggestion used to be attached only to 'already in MalAvi' findings, so a
+        name claimed by another submission was reported with no way forward."""
+        report = _screened(code="name_claimed_by_another_submission")
+        check_template.offer_free_names(
+            [report], {"SGS1"}, {"TUMIG19": "20260101T000000_Someone"}, [])
+        finding = report["issues"][0]
+        assert "Suggesting TUMIG20" in finding["message"]
+
+    def test_a_taken_name_whose_sequence_is_the_known_lineage_is_left_alone(
+            self, check_template):
+        """Renaming it would create a duplicate of something MalAvi already has."""
+        report = _screened()
+        report["issues"].append({"code": "sequence_is_known_lineage",
+                                 "subject": "TUMIG19", "severity": "warn",
+                                 "message": "already in MalAvi"})
+        check_template.offer_free_names([report], {"TUMIG19"}, {}, [])
+        assert not report.get("name_suggestions")
+
     def test_a_malformed_accession_is_reported(self, check_template, reference, tmp_path):
         path = _workbook(tmp_path, new_lineages=[
             ["TUMIG19", "not-an-accession", "Haemoproteus", "Turdus migratorius", None,

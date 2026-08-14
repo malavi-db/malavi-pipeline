@@ -218,13 +218,24 @@ def main(argv=None) -> int:
     out_path = root / "docs" / "assets" / "data" / "reserved_names.json"
     if args.dry_run:
         print(f"\n[dry-run] would write {out_path}")
-        return 0
+        return 2 if collisions else 0
     # Written only if a claim actually changed, so a daily run that finds no new
     # submissions leaves the repository alone. See malavi_curation.feeds.
     if write_feed(out_path, payload, ensure_ascii=True, newline="\n"):
         print(f"\nwrote {out_path}")
     else:
         print(f"\n{out_path.name} unchanged; left as it was")
+
+    # The feed is still written -- the earliest claimant's reservation is correct and the
+    # website should show it. But the run does NOT report success, because two submitters
+    # asking for one name needs a person: one of them has to be told, and this is the only
+    # place that knows. It used to be a line of stdout among many, in a program whose exit
+    # code was the only thing anyone looked at.
+    if collisions:
+        print(f"\n{len(collisions)} name(s) are claimed by more than one submission. "
+              f"The earliest claim is published; the other submitter(s) must be offered "
+              f"another name before their submission is approved.", file=sys.stderr)
+        return 2
     return 0
 
 

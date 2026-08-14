@@ -31,10 +31,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from malavi_curation import form_metadata  # noqa: E402
 from malavi_curation.config import load_config, repo_root  # noqa: E402
 from malavi_curation.feeds import write_feed  # noqa: E402
 from malavi_curation.submission_id import (  # noqa: E402
-    ID_PATTERN, load_ledger, submission_id_for,
+    ID_PATTERN, load_ledger,
 )
 
 LEADERBOARD_CONSENT_YES = "yes"
@@ -55,41 +56,29 @@ def _find(meta: Dict[str, str], *needles: str) -> Optional[str]:
     return None
 
 
+# The three form-answer parsers live in malavi_curation.form_metadata, not here.
+#
+# They were here first, and then the submitter notification emails needed the same three
+# answers. Two copies of "what did this person actually select?" is the shape of bug this
+# project has already had once -- three different parsers for submissions.exclude, one of
+# which raised on a documented-valid entry. So there is one implementation and these are
+# thin delegates, kept because the feed code and its tests read better with local names.
 def _publication_stage(meta: Dict[str, str]) -> str:
-    """Pre- or post-publication, from either wording of the form question.
+    """Pre- or post-publication. See form_metadata.publication_stage."""
+    return form_metadata.publication_stage(meta)
 
-    The question was reworded on 2026-08-05, from "Are you submitting published
-    or unpublished data?" to "Is this submission pre-publication or
-    post-publication?". Neither wording contains the other's keyword --
-    "published" is not a substring of "publication" -- so matching on one alone
-    silently blanks the field for every submission asked the other. Submissions
-    already fetched carry the old question text in their metadata, so both have
-    to keep working, and the ANSWERS are normalized to one vocabulary here.
+
+def _records_embargo(meta: Dict[str, str]) -> str:
+    """Whether an unpublished submitter's records may go public now.
+
+    See form_metadata.records_embargo, and records_are_held for the "" means hold rule.
     """
-    raw = (_find(meta, "publication") or _find(meta, "published") or "").lower()
-    if raw.startswith("pre") or raw.startswith("unpublished"):
-        return "pre-publication"
-    if raw.startswith("post") or raw.startswith("published"):
-        return "post-publication"
-    return ""
+    return form_metadata.records_embargo(meta)
 
 
 def _sending(meta: Dict[str, str]) -> str:
-    """What the submitter says they are sending: names, records, or both.
-
-    Added to the form on 2026-08-05. It is what the submitter DECLARED, not what
-    the workbook turned out to contain -- screening is the authority on that --
-    but it is the only description available for a submission that has not been
-    screened yet, which is exactly when the queue has least to say.
-    """
-    raw = (_find(meta, "sending") or "").lower()
-    if raw.startswith("new lineage"):
-        return "names and sequences"
-    if raw.startswith("records"):
-        return "records for a manuscript"
-    if raw.startswith("both"):
-        return "names, sequences and records"
-    return ""
+    """What the submitter says they are sending. See form_metadata.sending."""
+    return form_metadata.sending(meta)
 
 
 def _parse_ts(meta: Dict[str, str], fallback: str) -> str:
@@ -241,9 +230,26 @@ def summarize(sub_dir: Path, public_id: str,
 def _existing_id(inbox: Path, directory: str) -> Optional[str]:
     """The identifier already minted for a directory, without minting one.
 
-    Used only by --dry-run, which must not write. An identifier is assigned once and never
-    changes, so minting one during a rehearsal would make the rehearsal a real,
-    irreversible act -- exactly what --dry-run promises it is not.
+    **This program never mints, on any path.** It used to on a real run, and only --dry-run
+    took this route, on the argument that minting during a rehearsal would make the
+    rehearsal an irreversible act. That argument is right and it applies to the real run
+    too, harder:
+
+    An identifier is assigned once and never changes, and the mapping that guarantees it
+    lives in ``submission_ids.json`` -- which is gitignored. This program's output,
+    ``queue.json``, **is** committed, and the workflow that commits it runs on a clean CI
+    runner where that mapping does not exist. So a minting run there invents a sequence
+    from 1 in whatever order the directories sort, publishes it, and discards the mapping
+    when the job ends. The next run does it again.
+
+    Today the numbering happens to agree with the maintainer's, because intake directories
+    are named by timestamp and a full re-fetch reproduces the same order. That is luck, not
+    a property: one superseded submission, one directory that exists only on the maintainer's
+    machine, or one partial fetch shifts every number after the gap, and a public identifier
+    starts pointing at a different person's submission.
+
+    A submission with no identifier is therefore *not published* rather than given one here.
+    It has no public name yet, and inventing one is precisely the harm.
     """
     entry = load_ledger(Path(inbox))["ids"].get(directory)
     return entry["id"] if entry else None
@@ -314,14 +320,15 @@ def main(argv=None) -> int:
 
     subs = []
     skipped = []
+    unminted = []
     for d in sorted(p for p in inbox.iterdir() if p.is_dir()):
-        # A dry run must not mint: an identifier is assigned once and never changes,
-        # and minting one is a write to submission_ids.json. If this submission has
-        # no id yet, show a placeholder rather than claiming a number.
-        if args.dry_run:
-            public_id = _existing_id(inbox, d.name) or "(unminted)"
-        else:
-            public_id = submission_id_for(inbox, d.name)
+        # Never minted here, on either path -- see _existing_id for why the dry-run
+        # argument applies to the real run too. A submission with no identifier has no
+        # public name, and this program's job is to publish public names.
+        public_id = _existing_id(inbox, d.name)
+        if not public_id:
+            unminted.append(d.name)
+            continue
 
         s = summarize(d, public_id, review_state=review_states.get(public_id))
         if not s:
@@ -338,6 +345,18 @@ def main(argv=None) -> int:
         print(f"{len(skipped)} excluded from the public feeds:")
         for sid, reason in skipped:
             print(f"    {sid}  ({reason or 'no reason recorded'})")
+    if unminted:
+        # Loud, because on a machine that has the id ledger this means a submission is
+        # missing from the public queue, and on one that does not -- a CI runner -- it
+        # means every submission is, which is the correct outcome but not an obvious one.
+        print(f"\n{len(unminted)} submission(s) have no identifier yet and are NOT "
+              f"published:")
+        for name in unminted:
+            print(f"    {name}")
+        print("  An identifier is assigned once and never changes, so it is minted where\n"
+              "  submission_ids.json persists -- by the screen, on BIOMIX -- and never by\n"
+              "  this program, whose output is committed. If you are seeing all of them\n"
+              "  here, this is running somewhere without the id ledger.")
     print()
 
     # An id in the exclude list that matches nothing is almost always a typo, and

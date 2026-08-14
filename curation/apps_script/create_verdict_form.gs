@@ -43,6 +43,18 @@ var ACTION_OVERRIDE = 'Clear another curator’s hold (lead curators only)';
 var ACTION_CORRECTION = 'Submit a correction on behalf of a submitter';
 var ACTION_RETRACT = 'Withdraw a flag you placed yourself';
 var ACTION_APPROVE_CORRECTION = 'Approve a correction (lead curators only)';
+var ACTION_CLOSE = 'Close a submission for good (lead curators only)';
+
+// The reasons a submission may be closed, exactly as malavi_curation.verdicts.CLOSE_REASONS
+// spells them. The Python side maps each to a code in the committed decision record, so a
+// word changed here without changing it there makes the response unparseable.
+var CLOSE_REASONS = [
+  'It is already in MalAvi',
+  'Not avian haemosporidian data',
+  'A flag on it was never answered',
+  'The records could not be checked against the source',
+  'Another submission replaces it'
+];
 
 var VERDICT_APPROVE = 'Accept';
 var VERDICT_HOLD = 'Flag for further review';
@@ -92,33 +104,58 @@ function createVerdictForm() {
       .setTitle('What are you recording?')
       .setRequired(true);
 
-  // ---- The five branches ----------------------------------------------------------
-  // Two of these close paths the curator instructions already promised and no interface
+  // ---- The six branches -----------------------------------------------------------
+  // Three of these close paths the curator instructions already promised and no interface
   // could reach: withdrawing your own flag ("this BLOCKS the submission until you withdraw
-  // it or a lead curator clears it" — only the second half had a route), and a lead
-  // approving a correction, which is a real gate in the ledger that nothing could satisfy,
-  // so every correction stopped at "proposed".
+  // it or a lead curator clears it" — only the second half had a route), a lead approving a
+  // correction, which is a real gate in the ledger that nothing could satisfy, so every
+  // correction stopped at "proposed", and closing a submission for good.
+  //
+  // That last one matters most. "Reject" under Record a verdict lands the submission on
+  // 'held', deliberately, so a rejection gets a second look instead of being terminal on one
+  // person's say-so. Nothing then moved it any further, so a rejected submission stayed live
+  // forever: holding its reserved lineage names, and never telling the submitter anything.
   var verdictPage = buildVerdictPage(form);
   var overridePage = buildOverridePage(form);
   var correctionPage = buildCorrectionPage(form);
   var retractPage = buildRetractionPage(form);
   var approveCorrectionPage = buildCorrectionApprovalPage(form);
+  var closePage = buildClosePage(form);
 
   action.setChoices([
     action.createChoice(ACTION_VERDICT, verdictPage),
     action.createChoice(ACTION_RETRACT, retractPage),
     action.createChoice(ACTION_OVERRIDE, overridePage),
     action.createChoice(ACTION_CORRECTION, correctionPage),
-    action.createChoice(ACTION_APPROVE_CORRECTION, approveCorrectionPage)
+    action.createChoice(ACTION_APPROVE_CORRECTION, approveCorrectionPage),
+    action.createChoice(ACTION_CLOSE, closePage)
   ]);
 
   // ---- Responses spreadsheet -----------------------------------------------------
   var sheet = SpreadsheetApp.create('MalAvi — curator verdicts (responses)');
+
+  // GMT WITH NO DAYLIGHT SAVING, set here rather than left to the account's locale.
+  //
+  // Google stamps each response in the SPREADSHEET's timezone and records no offset, so
+  // the zone is the only thing that makes a response time unambiguous -- and that time
+  // drives the 24h publish hold and the 60-day timeout. verdicts.parse_row assumes UTC,
+  // per `review.verdict_sheet_timezone` in config/project.yml.
+  //
+  // A new sheet inherits the creating account's locale (US Eastern for malaviadmin), which
+  // would read every verdict 4-5 hours off, shifting with DST, with nothing in the data to
+  // show for it. This was missed on the 2026-08-10 regeneration and fixed by hand; setting
+  // it in code is what stops the next rebuild repeating that.
+  //
+  // "Etc/GMT" rather than "Europe/London" -- London observes DST.
+  sheet.setSpreadsheetTimeZone('Etc/GMT');
+
   form.setDestination(FormApp.DestinationType.SPREADSHEET, sheet.getId());
 
   Logger.log('Form (edit)     : ' + form.getEditUrl());
   Logger.log('Form (public)   : ' + form.getPublishedUrl());
   Logger.log('Responses sheet : ' + sheet.getId());
+  Logger.log('Sheet timezone  : ' + sheet.getSpreadsheetTimeZone() +
+             '  (must be GMT with no daylight saving)');
   Logger.log('');
   Logger.log('Put the responses sheet id in config/project.yml under review.verdict_sheet.');
   Logger.log('Item ids for building prefilled links:');
@@ -244,6 +281,8 @@ function buildCorrectionPage(form) {
       .setTitle('Correction on behalf of a submitter')
       .setHelpText(
           'Use this when you are fixing something in a submission rather than judging it.\n\n' +
+          'Flag the submission first. A correction only counts on top of a standing flag — ' +
+          'you accept later, once you can see the corrected report.\n\n' +
           'This creates a NEW REVISION, which clears every existing approval — including ' +
           'approvals from curators who were perfectly happy. That is deliberate: they ' +
           'approved a different version. The submitter’s original date and their claim on ' +
@@ -273,17 +312,18 @@ function buildCorrectionPage(form) {
       .setTitle('When did you hear back?')
       .setRequired(true);
 
-  form.addMultipleChoiceItem()
-      .setTitle('Have you also flagged this submission?')
-      .setHelpText(
-          'A correction and an acceptance cannot be the same act. Flag the submission, ' +
-          'describe the correction here, and accept it once the change has been made and ' +
-          'you can see the corrected report. Otherwise you would be approving a version ' +
-          'that does not exist yet — and the maintainer would be applying a change nobody ' +
-          'has reviewed in its final form.')
-      .setChoiceValues(['Yes — I have flagged it',
-                        'No — I will flag it now before submitting this'])
-      .setRequired(true);
+  // NO "have you also flagged this?" QUESTION HERE, removed 2026-08-10.
+  //
+  // It asked a curator to self-report something the ledger already knows as fact:
+  // ledger.record_correction refuses a correction when blocking_holds(entry) is empty, and
+  // says why. Asking as well bought nothing and cost a great deal of confusion -- its two
+  // answers read as a genuine choice, but "No, I will flag it now" made the parser discard
+  // the correction, so an honest answer threw the curator's work away.
+  //
+  // The rule itself is unchanged and still enforced; it now lives in the page description
+  // above, as a statement rather than a question. This is the same reasoning
+  // _parse_correction_approval gives for checking nothing: a check here would be a second
+  // copy of a rule that has to hold at the write regardless of what reached it.
 
   form.addParagraphTextItem()
       .setTitle('What should change?')
@@ -370,6 +410,49 @@ function buildCorrectionApprovalPage(form) {
 
 
 /**
+ * Closing a submission for good.
+ *
+ * The act that finishes a rejection. "Reject" under Record a verdict is deliberately NOT
+ * this: it lands the submission on 'held', so that a rejection gets a second look rather
+ * than ending the submission on one person's judgment. This is the separate, later act,
+ * and it is lead-only for the same reason clearing another curator's hold is.
+ *
+ * The reason is a fixed list rather than a text box because it is the one field of the
+ * review ledger that reaches data/decisions.json — the committed record, whose whole
+ * premise is that it contains no unpublished science. A free-text reason there would
+ * eventually carry a sentence describing somebody's data, in the one file meant to survive
+ * the erasure of that data.
+ */
+function buildClosePage(form) {
+  var page = form.addPageBreakItem().setTitle('Close a submission');
+
+  page.setHelpText(
+      'Lead curators only, and it ends the submission. Use it when a flag was never ' +
+      'answered, or the submission was never going to be included.\n\n' +
+      'Its reserved lineage names are released, it disappears from the public queue, and ' +
+      'the submitter is told — after the same 24-hour wait an approval gets, so there is ' +
+      'a window to notice a mistake before somebody is told their work was refused.\n\n' +
+      'A submission that a curator has already accepted cannot be closed here. Flag it ' +
+      'first, so that the objection is on the record and attributed to whoever raised it.');
+
+  form.addMultipleChoiceItem()
+      .setTitle('Why is it being closed?')
+      .setHelpText('This goes into the public decision record, so it is a fixed list.')
+      .setChoiceValues(CLOSE_REASONS)
+      .setRequired(true);
+
+  form.addParagraphTextItem()
+      .setTitle('Anything to add?')
+      .setHelpText('Optional, and kept internal — it is not published. Say what the ' +
+                   'reason above cannot.')
+      .setRequired(false);
+
+  page.setGoToPage(FormApp.PageNavigationType.SUBMIT);
+  return page;
+}
+
+
+/**
  * THE MANUAL CHECK. Do this once, after running createVerdictForm, before any real use.
  *
  * 1. Open the form's edit URL, Settings > Responses.
@@ -384,8 +467,9 @@ function buildCorrectionApprovalPage(form) {
  *    Confirm the response row carries the verified address of the account that submitted,
  *    NOT the account that owns the form.
  *
- * 4. Confirm the branching works: choosing each of the three actions should show only
- *    that branch's questions and then submit.
+ * 4. Confirm the branching works: choosing each of the five actions -- record a verdict,
+ *    withdraw your own flag, clear another curator's hold, submit a correction, approve a
+ *    correction -- should show only that branch's questions and then submit.
  *
  * 5. Delete the test response from the spreadsheet before real use.
  */

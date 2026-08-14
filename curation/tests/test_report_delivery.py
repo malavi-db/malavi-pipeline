@@ -259,23 +259,34 @@ def test_publishing_is_written_into_the_ledger(cli, tmp_path, monkeypatch, capsy
     from malavi_curation.report_delivery import Delivered
 
     inbox = tmp_path / "submissions"
-    submission_id = "20260101T000000_X"
-    (inbox / submission_id).mkdir(parents=True)
-    (inbox / submission_id / "report.pdf").write_bytes(PDF)
+    directory = "20260101T000000_Jane_Smith"      # carries the submitter's NAME
+    public_id = "MALAVI-SUB-2026-000001"          # what may leave this machine
+    (inbox / directory).mkdir(parents=True)
+    (inbox / directory / "report.pdf").write_bytes(PDF)
+    (inbox / "submission_ids.json").write_text(
+        json.dumps({"ids": {directory: {"id": public_id}}}), encoding="utf-8")
 
     with ledger.open_ledger(inbox, write=True) as entries:
-        ledger.ensure_entry(entries, submission_id, "A", ledger.now_utc())
+        ledger.ensure_entry(entries, public_id, "A", ledger.now_utc())
 
     monkeypatch.setattr(cli, "submissions_inbox", lambda: inbox)
     monkeypatch.setattr(cli, "describe", lambda: "Report delivery: stubbed")
-    monkeypatch.setattr(cli, "deliver",
-                        lambda sid, pdf, notify=True: Delivered(
-                            sid, "FILE123", "https://drive/FILE123", "created", 1))
+    # Capture what the delivery layer is handed: it becomes the Drive filename and the
+    # curator email subject, so it must be the opaque id and never the directory name.
+    handed = {}
 
-    assert cli.main([submission_id]) == 0
+    def fake_deliver(sid, pdf, notify=True):
+        handed["submission_id"] = sid
+        return Delivered(sid, "FILE123", "https://drive/FILE123", "created", 1)
+
+    monkeypatch.setattr(cli, "deliver", fake_deliver)
+
+    assert cli.main([directory]) == 0
+    assert handed["submission_id"] == public_id, (
+        "the submitter's name must never reach Drive or a curator's inbox")
 
     with ledger.open_ledger(inbox, write=False) as entries:
-        history = entries[submission_id].history
+        history = entries[public_id].history
     published = [event for event in history if event.get("event") == "report_published"]
     assert len(published) == 1
     assert published[0]["file_id"] == "FILE123"

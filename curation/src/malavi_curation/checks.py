@@ -179,6 +179,14 @@ CHECKS: Dict[str, Check] = {c.id: c for c in [
     _check("name_already_in_malavi", "Proposed names are free",
            "No proposed new lineage name is already a MalAvi lineage.",
            "name", Severity.WARNING),
+    # Separate from the check above because the answer a curator gives is different. A
+    # released name is settled and the submitter renames. A name claimed by a submission
+    # still in the queue is a question of who arrived first, and the earlier submitter may
+    # not have been granted it yet either.
+    _check("name_claimed_by_another_submission", "Proposed names are not already claimed",
+           "No proposed new lineage name has been claimed by an earlier submission that "
+           "is still under review.",
+           "name", Severity.WARNING),
     _check("sequence_is_known_lineage", "New sequences are actually new",
            "No sequence offered as new is identical to a lineage MalAvi already names.",
            "sequence", Severity.BLOCKING),
@@ -209,9 +217,14 @@ CHECKS: Dict[str, Check] = {c.id: c for c in [
     _check("lineage_without_host_record", "New lineages have a host record",
            "Each newly declared lineage appears in at least one host record.",
            "name", Severity.WARNING),
-    _check("reference_missing", "The submission names its publication",
-           "The Reference sheet carries the publication the data come from.",
+    _check("reference_missing", "The submission names its reference",
+           "The Reference sheet carries the study the data come from. An unpublished "
+           "study names itself '<Authors> unpubl'.",
            "submission", Severity.BLOCKING),
+    _check("reference_unpubl_malformed", "Unpublished references follow the convention",
+           "A reference held before publication is named '<Authors> unpubl', so that "
+           "every unpublished study in MalAvi can be found the same way.",
+           "submission", Severity.WARNING),
 
     # -- from the malaviR validators (validate_record.R) --------------------------------
     _check("host_name_resolves", "Host names resolve to avian taxonomy",
@@ -574,10 +587,12 @@ _R_CHECK_IDS = ("host_name_resolves", "host_geography_plausible",
 # which raised no issues still reports those checks as PASSED rather than as absent --
 # "we looked and it was fine" is information a curator needs.
 _SCREEN_CHECK_IDS = frozenset({
-    "name_already_in_malavi", "sequence_is_known_lineage", "sequence_needs_reframing",
+    "name_already_in_malavi", "name_claimed_by_another_submission",
+    "sequence_is_known_lineage", "sequence_needs_reframing",
     "sequence_stop_codon", "sequence_unplaceable", "accession_malformed",
     "lineage_without_sequence", "sequence_without_declaration", "record_without_country",
     "record_without_prevalence", "lineage_without_host_record", "reference_missing",
+    "reference_unpubl_malformed",
 })
 
 

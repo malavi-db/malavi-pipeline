@@ -254,3 +254,36 @@ def test_dry_run_changes_nothing(promote, workspace, registry):
 
 def test_an_empty_ledger_is_not_an_error(promote, workspace):
     assert promote.main(["--now", "2026-06-01T00:00:00+00:00"]) == 0
+
+
+# ------------------------------------------------- the record exists before it has to
+
+def test_an_empty_ledger_still_writes_the_decision_record(promote, workspace, capsys):
+    """C2: data/decisions.json did not exist at all, because nothing has been enrolled.
+
+    The program returned early on an empty ledger, so every run so far took that path. An
+    absent record is indistinguishable from "this program has never run", and it is the
+    only *committed* thing that will resolve a submission id later -- both the review
+    ledger and the id map are gitignored. Establishing it while it is empty means the first
+    real decision arrives as a diff to a tracked file.
+    """
+    root, inbox = workspace
+    seed(inbox, lambda entries: None)          # a ledger file with no entries in it
+
+    assert promote.main([]) == 0
+    output = capsys.readouterr().out
+
+    record = root / promote.DECISION_RECORD
+    assert record.is_file(), "the record must be written even with nothing to record"
+    assert json.loads(record.read_text()) == {"schema": 1, "decisions": []}
+    assert "empty" in output
+
+
+def test_an_empty_ledger_dry_run_writes_nothing(promote, workspace, capsys):
+    root, inbox = workspace
+    seed(inbox, lambda entries: None)
+
+    assert promote.main(["--dry-run"]) == 0
+    capsys.readouterr()
+
+    assert not (root / promote.DECISION_RECORD).is_file()

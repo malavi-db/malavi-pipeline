@@ -162,6 +162,24 @@ DISPOSITION_REASON_CODES = (
 )
 
 
+# Why a submission may be DECLINED, as opposed to finished some other way. A subset of the
+# codes above: the ones left out belong to other paths and would be false on a decline.
+# `submitter_unresponsive` is the timeout's, written by promote.py; `released_in_build` is a
+# release's; `reopened` is set on revival; `withdrawn_by_submitter` describes a different act
+# by a different person.
+#
+# Here rather than in a caller because two interfaces now reach it -- a lead answering the
+# verdict form, and the maintainer running close_submission.py -- and a vocabulary that
+# lives in one of them is a vocabulary the other can disagree with.
+DECLINE_REASON_CODES = (
+    "duplicate",                 # already in MalAvi
+    "out_of_scope",              # not avian haemosporidian data
+    "unresolved_objection",      # a flag was never answered
+    "data_not_verifiable",       # the records could not be checked against the source
+    "superseded",                # replaced by another submission
+)
+
+
 class LedgerError(ValueError):
     """A rule in this module was violated. Never raised for anything a curator typed."""
 
@@ -352,9 +370,21 @@ def _review_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     file, because the value that would do the damage — a zero publish hold, silently
     disabling the wait a second curator relies on — is no less dangerous for having come
     from a caller than from a config file.
+
+    **Either shape is accepted: the whole project config, or its ``review`` section.** Until
+    2026-08-13 only the section was, and every caller in the repository passed the whole
+    config — ``promote.py``, ``fetch_verdicts.py``, ``notify_submitters.py``,
+    ``release_gate.py``. The lookups therefore missed and every one of them silently got the
+    defaults back. It was invisible because the defaults happen to equal what
+    ``config/project.yml`` says; the moment anyone lengthened the publish hold, the release
+    gate and the submitter notices would have gone on using 24 hours with nothing to say so.
+    Accepting both shapes here fixes every caller at once, and the two cannot be confused: a
+    ``review`` section never contains a key called ``review``.
     """
     source = "config/project.yml review" if config is None else "review config"
     configured = config if config is not None else (load_config().get("review") or {})
+    if "review" in configured:
+        configured = configured.get("review") or {}
 
     settings = {
         "publish_hold_hours": configured.get("publish_hold_hours", 24),
@@ -595,6 +625,53 @@ def ensure_entry(entries: Dict[str, Entry], submission_id: str, track: str,
     return entry
 
 
+# The history events that mean somebody decided about the embargo on purpose, rather than
+# it being read off the submitter's original form answer. Enrollment consults this before
+# re-reading metadata.json: without it, a maintainer lifting an embargo because the
+# submitter emailed "the paper is out" would have it silently re-imposed on the next
+# intake run, and the release would go on withholding records the author had released.
+EMBARGO_EVENTS = ("embargo_set", "embargo_lifted")
+
+
+def embargo_decided(entry: Entry) -> bool:
+    """Has anybody explicitly set or lifted this submission's embargo?"""
+    return any(event.get("event") in EMBARGO_EVENTS for event in entry.history)
+
+
+def set_embargo(entry: Entry, embargoed: bool, actor: str, at: Optional[str] = None,
+                note: str = "") -> None:
+    """Hold this submission's records out of releases, or stop holding them.
+
+    **What an embargo is and is not.** It withholds *publication* of the records. It does
+    not withhold review: the submission can be screened, approved, and have its lineage
+    names confirmed and reserved while embargoed, which is the point — a submitter waiting
+    on a journal gets their name secured without their unpublished data being released
+    from under them.
+
+    ``released`` is refused because it is terminal and already published. Embargoing after
+    the fact would put a claim in the ledger that the released ZIP contradicts, and the
+    ledger cannot un-publish something people have downloaded.
+
+    ``note`` is free text and is kept here only; unlike a disposition reason it never
+    reaches the committed decision record, so it is not a closed vocabulary.
+    """
+    if entry.state == "released":
+        raise LedgerError(
+            f"{entry.submission_id} is released; its records are already published and an "
+            f"embargo recorded now would contradict the release.")
+
+    stamp = _validate_stamp(at or now_utc(), "embargo timestamp")
+    was = entry.embargoed
+    entry.embargoed = bool(embargoed)
+    # Recorded even when the value did not change. "Somebody looked at this and confirmed
+    # it should stay held" is a different fact from "nobody has considered it since
+    # intake", and the second is the one that lets enrollment keep re-reading the form.
+    entry.history.append({
+        "at": stamp,
+        "event": "embargo_set" if entry.embargoed else "embargo_lifted",
+        "actor": actor, "from": was, "to": entry.embargoed, "note": note})
+
+
 # --------------------------------------------------------------------------------------
 # Reading an entry's review status
 # --------------------------------------------------------------------------------------
@@ -716,18 +793,30 @@ def author_of_revision(entry: Entry, revision: Optional[int] = None) -> str:
 # Recording things
 # --------------------------------------------------------------------------------------
 
-def _next_verdict_id(entry: Entry) -> str:
-    """The next free verdict id, derived from the highest in use rather than the count.
+def _next_id(existing: Iterable[Any], prefix: str) -> str:
+    """The next free id of a series, derived from the highest in use rather than the count.
 
     The ledger is a hand-editable file. Deriving from the count means deleting one row makes
-    the next write re-issue an id that another verdict already has, after which a retraction
-    can clear a different curator's objection than the one it names.
+    the next write re-issue an id that another record already has, after which a retraction
+    can clear a different curator's objection than the one it names -- or a lead can approve
+    a correction they never read.
+
+    Shared by verdicts and corrections. Corrections minted ids by counting until
+    2026-08-10, 200 lines below this docstring explaining why counting is wrong, so an
+    entry holding C1 and C2 with C1 hand-deleted minted C2 a second time; and
+    :func:`approve_correction` returns the first match.
     """
     highest = 0
-    for verdict in entry.verdicts:
-        if verdict.id.startswith("V") and verdict.id[1:].isdigit():
-            highest = max(highest, int(verdict.id[1:]))
-    return f"V{highest + 1}"
+    for item in existing:
+        identifier = getattr(item, "id", "") or ""
+        if identifier.startswith(prefix) and identifier[len(prefix):].isdigit():
+            highest = max(highest, int(identifier[len(prefix):]))
+    return f"{prefix}{highest + 1}"
+
+
+def _next_verdict_id(entry: Entry) -> str:
+    """The next free verdict id."""
+    return _next_id(entry.verdicts, "V")
 
 
 def record_verdict(entry: Entry, address: str, verdict: str, reason_code: str = "",
@@ -902,6 +991,54 @@ def override_hold(entry: Entry, verdict_id: str, address: str, consulted: Iterab
     return record
 
 
+def decline(entry: Entry, address: str, reason: str, note: str = "",
+            at: Optional[str] = None,
+            config: Optional[Dict[str, Any]] = None,
+            registry_path: Optional[Path] = None) -> None:
+    """A lead closes a submission MalAvi will not include.
+
+    **Lead-only, and checked here.** ``transition()`` takes ``actor`` as free text and does
+    not resolve it, which is right for the promoter and the intake but wrong for this: a
+    decline is the most consequential thing anybody can do to a submission, and it is the
+    one state a curator can reach from the verdict form where nothing else would ask who
+    they are. The two other lead powers -- clearing another curator's hold, approving a
+    correction -- resolve the address the same way, for the same reason.
+
+    **Why "Reject" on the form does not come here.** It lands on ``held``, deliberately, so
+    that a rejection gets a second look rather than being terminal on one person's say-so.
+    This is the separate, later act: a lead confirming that the objection was never answered
+    and the submission is finished. Somebody has to have flagged it first, which the state
+    machine enforces -- ``in_review``, ``held`` and ``awaiting_submitter`` can decline, and
+    ``approved`` cannot.
+
+    ``reason`` is a closed vocabulary because it reaches ``data/decisions.json``, the one
+    committed file whose premise is that it holds no unpublished science.
+
+    ``note`` is free text, kept in the gitignored ledger only, and is where the lead says
+    what a reason code cannot.
+    """
+    curator = resolve(address, registry_path)
+    if curator is None or not curator.is_lead:
+        raise LedgerError(
+            f"{address} is not an active lead curator. Closing a submission is a lead "
+            f"action: a rejection already gets a second look by landing on 'held', and "
+            f"ending it there should not rest on the same single judgment.")
+
+    if reason not in DECLINE_REASON_CODES:
+        raise LedgerError(
+            f"reason must be one of {DECLINE_REASON_CODES}, got {reason!r}. The codes "
+            f"left out of that list describe other ways a submission ends and would be "
+            f"false here.")
+
+    stamp = _validate_stamp(at or now_utc(), "decline timestamp")
+    # transition() re-checks the state machine at the write and releases the reserved
+    # names. Attributed to the curator id, not the address, like every other actor here.
+    transition(entry, "declined", actor=curator.id, at=stamp, reason=reason, config=config)
+    if note.strip():
+        entry.history.append({"at": stamp, "event": "decline_note",
+                              "actor": curator.id, "note": note.strip()})
+
+
 def record_correction(entry: Entry, address: str, change: str, authority: str,
                      consulted: Iterable[str], consulted_on: str = "",
                      at: Optional[str] = None,
@@ -927,7 +1064,7 @@ def record_correction(entry: Entry, address: str, change: str, authority: str,
             "approval would name a version that does not exist yet.")
 
     correction = Correction(
-        id=f"C{len(entry.corrections) + 1}", by=curator.id, at=stamp,
+        id=_next_id(entry.corrections, "C"), by=curator.id, at=stamp,
         authority=authority, consulted=[str(c) for c in consulted],
         consulted_on=consulted_on, change=str(change).strip())
     entry.corrections.append(correction)
@@ -1030,20 +1167,30 @@ def bump_revision(entry: Entry, reason: str, at: Optional[str] = None,
     entry.revisions.append(revision)
 
     # An approval that was standing is now an approval of something that no longer exists.
+    # New content is also the answer an awaiting_submitter was waiting for, so the 60-day
+    # clock stops — without that, a submitter who replied on day 59 could still have their
+    # reserved names released on day 60, the exact harm the timeout's config comment
+    # argues against.
+    #
+    # Both moves are set directly rather than through transition(), because transition
+    # would clear approved_at and rerun rules that have nothing to say about a resubmission.
+    # They still get a `state` history event: anything reconstructing the timeline from
+    # history -- an audit, a later report -- otherwise sees a submission jump from approved
+    # to held with no recorded step between, which reads as a lost record rather than a
+    # revision.
+    previous_state = entry.state
     entry.approved_at = None
-    if entry.state == "approved":
-        entry.state = "in_review"
-
-    # New content *is* the answer we were waiting for, so the 60-day clock stops. Without
-    # this, a submitter who replied on day 59 could still have their reserved lineage names
-    # released on day 60 — the exact harm the timeout's own config comment argues against.
-    if entry.state == "awaiting_submitter":
+    if entry.state in ("approved", "awaiting_submitter"):
         entry.state = "in_review"
     entry.awaiting_since = None
 
     entry.history.append({"at": stamp, "event": "revision", "revision": entry.revision,
                           "actor": author_id or "submitter", "authority": authority,
                           "reason": reason})
+    if entry.state != previous_state:
+        entry.history.append({"at": stamp, "event": "state", "from": previous_state,
+                              "to": entry.state, "actor": author_id or "submitter",
+                              "reason": "reopened"})
     return revision
 
 
@@ -1108,6 +1255,20 @@ def transition(entry: Entry, to_state: str, actor: str, at: Optional[str] = None
                 f"{entry.submission_id} was approved at {entry.approved_at}; the "
                 f"{settings['publish_hold_hours']}h publish hold has not elapsed "
                 f"({waited} so far). The wait exists so a second curator can still object.")
+
+        # The embargo, re-checked here like every other blocking rule. It was missing
+        # until 2026-08-10, which made this function's own promise -- "every blocking rule
+        # is re-checked here" -- untrue of the one rule that protects a submitter's
+        # unpublished data. release_gate and releasable() both filter embargoed entries,
+        # but build_release reads the ledger OUTSIDE the lock and transitions inside a
+        # later one, so an embargo set in between was invisible to both. The defense the
+        # stale read relies on is exactly this re-check.
+        if entry.embargoed:
+            raise LedgerError(
+                f"{entry.submission_id} is embargoed: the submitter asked that their "
+                f"records be held until their study is out. Releasing it would publish "
+                f"unpublished data. Lift the embargo first -- publish_reference does it "
+                f"when the study appears.")
 
     previous = entry.state
     entry.state = to_state
@@ -1204,7 +1365,12 @@ def due_actions(entries: Dict[str, Entry], now: Optional[str] = None,
             if entry.state == "approved" and entry.approved_at:
                 waited = moment - _parse(entry.approved_at)
                 approvable, why_not = is_approvable(entry)
-                if waited >= hold and approvable:
+                # `not entry.embargoed` matches :func:`releasable`, which has always
+                # excluded them. Without it the two disagreed, and the operator running
+                # promote.py was told an embargoed submission was ready to ship while the
+                # release build correctly refused to ship it -- the same rule in two
+                # places with a clause missing from one.
+                if waited >= hold and approvable and not entry.embargoed:
                     due.append(DueAction(
                         submission_id=submission_id,
                         action="release_eligible",

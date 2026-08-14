@@ -43,8 +43,10 @@ db <- readRDS(db_file)
 refs <- db[["references"]]
 
 # --- Write DataTables-style JSON: {"columns": [...], "data": [[...]]} ---------
-# This matches the shape the Python side already reads (load_malavi_titles), and the
-# same shape export/build_datatables_json.R produces for the website tables.
+# This matches the shape the Python side already reads (load_malavi_titles): a list of
+# plain column names, then one array per row. Not the website's table JSON, which carries
+# column OBJECTS ({key, label, type}) because the page builds its headers from them --
+# nothing here needs that, and the watcher only ever reads the title column.
 suppressPackageStartupMessages(library(jsonlite))
 payload <- list(
   columns = as.list(colnames(refs)),

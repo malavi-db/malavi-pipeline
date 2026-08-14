@@ -269,8 +269,7 @@ def _flag_and_propose(fetch, entries, registry, by="bob@example.edu"):
                     verdicts.COL_CORRECTION_KIND: "Judgment — confirmed with another curator",
                     verdicts.COL_CONFIRMED_BY: "Alice",
                     verdicts.COL_CONFIRMED_ON: "2026-08-02",
-                    verdicts.COL_CHANGE: "Turdus migratorius, not Turdus migratoria.",
-                    verdicts.COL_FLAGGED: "Yes"})
+                    verdicts.COL_CHANGE: "Turdus migratorius, not Turdus migratoria."})
 
 
 def test_a_correction_is_proposed_and_waits_for_a_lead(fetch, entries, registry):
@@ -410,3 +409,82 @@ def test_the_applied_ledger_survives_a_round_trip(fetch, tmp_path):
     fetch.save_applied(path, {"abc123": {"status": "applied", "submission": SUBMISSION}})
     assert fetch.load_applied(path)["abc123"]["submission"] == SUBMISSION
     assert json.loads(path.read_text())["schema"] == 1
+
+
+# ------------------------------------------- closing a submission from the form
+
+def _reject_then_close(fetch, entries, registry, closer="lead@example.edu"):
+    """The real sequence: somebody rejects, which holds it; a lead then closes it."""
+    apply(fetch, entries, registry, **{
+        verdicts.COL_EMAIL: "bob@example.edu",
+        verdicts.COL_VERDICT: "Reject",
+        verdicts.COL_WHY: "The records cannot be checked against the paper.",
+    })
+    assert entries[SUBMISSION].state == "held", "Reject holds; it does not end anything"
+
+    return apply(fetch, entries, registry, **{
+        verdicts.COL_EMAIL: closer,
+        verdicts.COL_ACTION: verdicts.ACTION_CLOSE,
+        verdicts.COL_CLOSE_REASON: "A flag on it was never answered",
+        verdicts.COL_CLOSE_NOTE: "No reply in six weeks.",
+    })
+
+
+def test_a_lead_can_finish_a_rejected_submission_from_the_form(fetch, entries, registry):
+    """B2's remaining half: a curator's own route to `declined`, with no shell involved."""
+    entries[SUBMISSION].reserved_names = ["TUMIG19"]
+
+    outcome = _reject_then_close(fetch, entries, registry)
+
+    assert outcome["status"] == "applied"
+    entry = entries[SUBMISSION]
+    assert entry.state == "declined"
+    assert entry.final_disposition["reason_code"] == "unresolved_objection"
+    assert entry.final_disposition["by"] == "lead"
+    assert entry.name_state == "released"
+    assert "TUMIG19" in outcome["detail"], "it says which names went back"
+
+
+def test_a_non_lead_closing_is_refused_and_filed(fetch, entries, registry):
+    """Refused, not lost. The curator has already submitted and gone by now."""
+    outcome = _reject_then_close(fetch, entries, registry, closer="alice@example.edu")
+
+    assert outcome["status"] == "refused"
+    assert "not an active lead curator" in outcome["detail"]
+    assert entries[SUBMISSION].state == "held", "nothing moved"
+
+
+def test_closing_an_approved_submission_is_refused(fetch, entries, registry):
+    """A decline follows an objection rather than replacing one."""
+    apply(fetch, entries, registry)
+    assert entries[SUBMISSION].state == "approved"
+
+    outcome = apply(fetch, entries, registry, **{
+        verdicts.COL_EMAIL: "lead@example.edu",
+        verdicts.COL_ACTION: verdicts.ACTION_CLOSE,
+        verdicts.COL_CLOSE_REASON: "Not avian haemosporidian data",
+    })
+
+    assert outcome["status"] == "refused"
+    assert "not an allowed transition" in outcome["detail"]
+    assert entries[SUBMISSION].state == "approved"
+
+
+def test_the_decline_notice_becomes_due_after_the_close(fetch, entries, registry):
+    """The whole point: a rejected submitter is finally told something."""
+    import importlib.util
+    from datetime import datetime, timedelta, timezone
+
+    spec = importlib.util.spec_from_file_location(
+        "_notify", repo_root() / "curation" / "notify_submitters.py")
+    notify = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(notify)
+
+    _reject_then_close(fetch, entries, registry)
+    entry = entries[SUBMISSION]
+
+    closed = notify._closed_at(entry)
+    assert closed, "notify_submitters reads the history event this writes"
+    at = datetime.fromisoformat(closed)
+    assert notify.settled(entry, CONFIG, now=at + timedelta(hours=6))[0] is False
+    assert notify.settled(entry, CONFIG, now=at + timedelta(hours=48))[0] is True

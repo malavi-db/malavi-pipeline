@@ -67,12 +67,21 @@ to run if anything credential-shaped has found its way into `docs/`.
 
 ## Publishing an update
 
+This is the short path, for republishing the **same** release — a copy edit, a fixed link, a
+regenerated figure:
+
 ```bash
 Rscript export/build_site_stats.R        # refresh the numbers the site shows
 Rscript export/build_sequence_index.R    # refresh the sequence checker's index
 node docs/assets/js/tests/test_sequence_check.mjs   # must pass before publishing
 publish/push_site.sh
 ```
+
+**If the pinned release changed, this is not enough — use RUNBOOK §6, which runs all six
+export scripts.** In particular `build_downloads.R` writes the per-release download files,
+and every download link on the site is built from the release string, so publishing a new
+release without it leaves every one of those links pointing at a file that was never
+written.
 
 ## A custom domain, later
 

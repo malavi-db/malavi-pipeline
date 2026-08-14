@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from malavi_curation.checks import CheckResult, CheckRun, Finding, Outcome, Severity
+from malavi_curation import report_html
 from malavi_curation.report_html import render_report, write_report
 
 # A payload that is inert as text and dangerous as markup. Attribute-breaking quote
@@ -626,3 +627,122 @@ def test_every_check_belongs_to_a_named_group():
 
     ungrouped = sorted(cid for cid in CHECKS if _group_of(cid) == "Other")
     assert not ungrouped, f"checks with no group: {ungrouped}"
+
+
+# ------------------------------------------- the ids the verdict form asks a curator for
+
+class _Verdict:
+    """Enough of ledger.Verdict for the report. Duck-typed, as the renderer reads it."""
+
+    def __init__(self, id, curator, at, revision=1, reason_text="", blocks=True):
+        self.id = id
+        self.curator = curator
+        self.at = at
+        self.revision = revision
+        self.reason_code = ""
+        self.reason_text = reason_text
+        self.blocks = blocks
+
+
+class _Correction:
+    def __init__(self, id, by, at, change, approved=False, applied=False, approved_by=""):
+        self.id = id
+        self.by = by
+        self.at = at
+        self.change = change
+        self.approved = approved
+        self.applied = applied
+        self.approved_by = approved_by
+
+
+class _Entry:
+    def __init__(self, verdicts=(), corrections=()):
+        self.verdicts = list(verdicts)
+        self.corrections = list(corrections)
+
+
+def test_a_standing_flag_is_printed_with_the_id_the_form_wants():
+    """B4: three of the form's five actions need a V1/C1 id, minted in a gitignored file.
+
+    So a curator could raise a flag and have no way to learn what to type to withdraw it,
+    and a lead could not approve a correction -- the gate every correction stops at.
+    """
+    entry = _Entry(verdicts=[
+        _Verdict("V1", "bob", "2026-08-02T01:00:00+00:00", reason_text="Host synonym?")])
+
+    html = report_html._standing_section(entry)
+
+    assert "V1" in html
+    assert "bob" in html and "Host synonym?" in html
+    assert "2026-08-02" in html
+    assert "Withdraw a flag you placed yourself" in html or "Withdraw a flag" in html
+
+
+def test_a_resolved_flag_is_not_listed_as_standing():
+    """`blocks` is the ledger's own rule -- retracted or overridden means it stopped."""
+    entry = _Entry(verdicts=[
+        _Verdict("V1", "bob", "2026-08-02T01:00:00+00:00", reason_text="withdrawn one",
+                 blocks=False)])
+
+    assert report_html._standing_section(entry) == ""
+
+
+def test_a_correction_awaiting_a_lead_shows_its_id():
+    entry = _Entry(corrections=[
+        _Correction("C1", "alice", "2026-08-03T00:00:00+00:00", "Host is Turdus merula.")])
+
+    html = report_html._standing_section(entry)
+
+    assert "C1" in html and "Host is Turdus merula." in html
+    assert "Approve a correction" in html
+
+
+def test_an_approved_but_unapplied_correction_is_shown_separately():
+    entry = _Entry(corrections=[
+        _Correction("C1", "alice", "2026-08-03T00:00:00+00:00", "Country spelling.",
+                    approved=True, approved_by="lead")])
+
+    html = report_html._standing_section(entry)
+
+    assert "C1" in html and "lead" in html
+    assert "new revision" in html
+    assert "Approve a correction" not in html, "it has already been approved"
+
+
+def test_an_applied_correction_is_not_listed_at_all():
+    entry = _Entry(corrections=[
+        _Correction("C1", "alice", "2026-08-03T00:00:00+00:00", "done",
+                    approved=True, applied=True, approved_by="lead")])
+
+    assert report_html._standing_section(entry) == ""
+
+
+def test_a_clean_submission_gets_no_empty_table():
+    assert report_html._standing_section(_Entry()) == ""
+    assert report_html._standing_section(None) == ""
+
+
+def test_the_reason_text_is_escaped():
+    """It is the curator's free text, and it reaches an HTML page."""
+    entry = _Entry(verdicts=[
+        _Verdict("V1", "bob", "2026-08-02T01:00:00+00:00",
+                 reason_text="<script>alert(1)</script>")])
+
+    html = report_html._standing_section(entry)
+
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_the_id_cell_uses_a_class_the_stylesheet_defines():
+    """A class that matches nothing ships an unstyled block nobody notices until print.
+
+    The id is the one value a curator has to copy by eye without mistyping, and
+    ``td.handle`` is the rule that makes it the most legible cell in the row.
+    """
+    entry = _Entry(verdicts=[_Verdict("V1", "bob", "2026-08-02T01:00:00+00:00")])
+
+    html = report_html._standing_section(entry)
+
+    assert 'class="handle"' in html
+    assert "td.handle" in report_html._stylesheet()

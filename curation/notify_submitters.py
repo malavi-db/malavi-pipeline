@@ -56,8 +56,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from datetime import datetime, timedelta, timezone                     # noqa: E402
 
+from malavi_curation import form_metadata                              # noqa: E402
 from malavi_curation import ledger                                     # noqa: E402
 from malavi_curation.config import load_config, repo_root              # noqa: E402
+from malavi_curation.submission_id import (                            # noqa: E402
+    directory_for, is_opaque,
+)
 from malavi_curation.report_delivery import (                          # noqa: E402
     DeliveryError, deliver_decline_notice, deliver_name_confirmation, describe,
 )
@@ -115,9 +119,23 @@ def settled(entry, config: Dict, now: Optional[datetime] = None) -> Tuple[bool, 
     if not stamp:
         return False, f"{entry.state} but carries no timestamp for when that happened"
 
-    hours = ((config.get("review") or {}).get("publish_hold_hours", 24))
-    moment = now or datetime.now(timezone.utc)
-    waited = moment - datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    # Read the hold through the ledger's own validator rather than off the dict. It
+    # coerces to int and refuses zero or negative -- "zero would silently disable the
+    # protection the value exists to provide". Reading the key directly meant a
+    # publish_hold_hours of 0 left transition() correctly refusing a release while this
+    # program mailed the submitter immediately, which is the exact window the design says
+    # must never be skipped. A quoted "24" in YAML raised TypeError and killed the run.
+    hours = ledger._review_config(config)["publish_hold_hours"]
+
+    # A timestamp that cannot be read must fail this one submission, not the run. The same
+    # bug was fixed in ledger.due_actions for the same reason: "one bad value used to stop
+    # every clock for every submission in the ledger until somebody noticed".
+    try:
+        moment = now or datetime.now(timezone.utc)
+        waited = moment - ledger._parse(stamp)
+    except (ValueError, TypeError) as exc:
+        return False, f"unreadable timestamp {stamp!r} ({exc})"
+
     if waited < timedelta(hours=hours):
         remaining = timedelta(hours=hours) - waited
         return False, f"hold has {remaining} left to run"
@@ -145,7 +163,16 @@ def submitter_of(inbox: Path, submission_id: str) -> Tuple[str, str, str]:
     A missing address is an error rather than a skip. It means a submission was approved
     that we cannot answer, and that is something a maintainer has to see.
     """
-    path = inbox / submission_id / "submission.json"
+    # The ledger is keyed by the minted opaque id; the directory on disk is named from the
+    # submitter. Looking the directory up under the id found nothing, so this program could
+    # never send anything -- and the resulting DeliveryError aborted the whole run, which
+    # (see main) discarded the "already told them" records of everyone emailed before it.
+    directory = directory_for(inbox, submission_id) if is_opaque(submission_id) \
+        else submission_id
+    if not directory:
+        raise DeliveryError(
+            f"{submission_id}: no directory is mapped to this id in submission_ids.json.")
+    path = inbox / directory / "submission.json"
     if not path.is_file():
         raise DeliveryError(
             f"{submission_id}: no submission.json, so there is no submitter address to "
@@ -154,7 +181,50 @@ def submitter_of(inbox: Path, submission_id: str) -> Tuple[str, str, str]:
     submitter = data.get("submitter") or {}
     reference = data.get("reference") or {}
     label = " ".join(str(reference.get(k, "")) for k in ("title", "year")).strip()
-    return submitter.get("email", ""), submitter.get("name", ""), label
+    email = (submitter.get("email") or "").strip()
+    if "@" not in email:
+        # Raised here, where the caller can catch it per submission, rather than left for
+        # build_notice_payload to raise mid-send. One approved submission with no address
+        # must not stop every other submitter from being told.
+        raise DeliveryError(
+            f"{submission_id}: submission.json carries no usable submitter address "
+            f"({email!r}). Nothing was sent for this one.")
+    return email, submitter.get("name", ""), label
+
+
+def selections_of(inbox: Path, submission_id: str) -> Dict[str, object]:
+    """What the submitter chose on the form, for the confirmation email to quote back.
+
+    Read from ``metadata.json`` -- the verbatim form response -- rather than from
+    ``submission.json``, because the answers are the submitter's own words and the
+    confirmation email quotes them ("You selected ...").
+
+    A missing or unreadable metadata.json is not an error. It yields empty strings and
+    ``records_held=True``, which is the same conservative reading applied to a submission
+    that predates the embargo question: say nothing specific, and do not tell somebody
+    their unpublished records are about to be published when we cannot confirm they
+    agreed to it.
+    """
+    directory = directory_for(inbox, submission_id) if is_opaque(submission_id) \
+        else submission_id
+    metadata: Dict[str, object] = {}
+    if directory:
+        path = inbox / directory / "metadata.json"
+        if path.is_file():
+            try:
+                metadata = json.loads(path.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                metadata = {}
+    return {
+        # Quoted verbatim in the email, so the raw answer rather than the normalized one.
+        # Through stage_answer rather than find_answer directly: the embargo question also
+        # contains "published", and find_answer returns the first match in sheet order, so
+        # doing this lookup here was one form reorder away from quoting the wrong answer.
+        "stage": form_metadata.stage_answer(metadata),
+        "sending": form_metadata.find_answer(metadata, "sending") or "",
+        "records_included": form_metadata.records_were_included(metadata),
+        "records_held": form_metadata.records_are_held(metadata) if metadata else True,
+    }
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -175,7 +245,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     config = load_config()
     inbox = submissions_inbox()
-    sent = skipped = 0
+    sent = skipped = failed = 0
     named = bool(arguments.submission_id)   # explain skips only when asked about one
 
     try:
@@ -208,7 +278,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                         print(f"  {submission_id}: not ready -- {why_not}")
                     continue
 
-                email, who, reference = submitter_of(inbox, submission_id)
+                # Per submission, so one bad entry cannot discard the history records of
+                # everyone already emailed in this run. open_ledger only save()s on a clean
+                # exit, so an exception escaping here means the sends happened and the
+                # "already told them" guards did not -- and the next run mails them again.
+                try:
+                    email, who, reference = submitter_of(inbox, submission_id)
+                except DeliveryError as exc:
+                    print(f"  {submission_id}: SKIPPED -- {exc}")
+                    skipped += 1
+                    continue
+
                 print(f"  {submission_id}  [{entry.state}]")
                 print(f"    to     : {email or '(none)'}")
 
@@ -226,12 +306,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                     print(f"    names  : {', '.join(names)}")
                     for proposed, granted in sorted(changed.items()):
                         print(f"    changed: {proposed} -> {granted}")
+                    selections = selections_of(inbox, submission_id)
+                    print(f"    records: {'held until publication' if selections['records_held'] else 'in the next release'}"
+                          f"{'' if selections['records_included'] else ' (none sent yet)'}")
                     if arguments.dry_run:
                         print("    [dry-run] nothing sent")
                         continue
-                    result = deliver_name_confirmation(
-                        submission_id, to=email, submitter_name=who, names=names,
-                        corrections=changed, reference=reference)
+                    deliver = deliver_name_confirmation
+                    message = dict(to=email, submitter_name=who, names=names,
+                                   corrections=changed, reference=reference,
+                                   selections=selections)
                     record = {"event": event, "at": ledger.now_utc(), "names": names,
                               "corrections": changed, "to": email}
                 else:
@@ -239,19 +323,41 @@ def main(argv: Optional[List[str]] = None) -> int:
                     if arguments.dry_run:
                         print("    [dry-run] nothing sent")
                         continue
-                    result = deliver_decline_notice(
-                        submission_id, to=email, submitter_name=who, reference=reference)
+                    deliver = deliver_decline_notice
+                    message = dict(to=email, submitter_name=who, reference=reference)
                     record = {"event": event, "at": ledger.now_utc(), "to": email}
+
+                # The send is guarded for the same reason submitter_of() above is, and this
+                # is the guard that was missing: open_ledger() only save()s on a clean exit
+                # of the `with`, so an exception escaping HERE discarded the history records
+                # of everyone already emailed in this run. The mail had gone out; the
+                # "already told them" guard had not been written; the next run mailed them
+                # a second time. `Exception`, not just DeliveryError -- the transport can
+                # raise a requests error of its own, and the consequence is identical.
+                try:
+                    result = deliver(submission_id, **message)
+                except Exception as exc:                      # noqa: BLE001 -- see above
+                    print(f"    NOT SENT -- {exc}", file=sys.stderr)
+                    failed += 1
+                    continue
 
                 print(f"    sent to {result.notified} address(es)")
                 entry.history.append(record)
                 sent += 1
 
     except DeliveryError as exc:
+        # Still reachable: open_ledger() itself, or anything outside the per-submission
+        # guards. Nothing was sent in that case, so there is no history to lose.
         print(f"\nERROR: {exc}", file=sys.stderr)
         return 1
 
     print(f"\nnotified {sent} submitter(s); {skipped} not due.")
+    if failed:
+        # The ledger was saved on the way out, so the ones that DID go are recorded and
+        # will not be repeated. Say plainly that the run was partial.
+        print(f"{failed} delivery/deliveries failed and will be retried on the next run.",
+              file=sys.stderr)
+        return 1
     return 0
 
 

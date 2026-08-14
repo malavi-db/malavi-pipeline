@@ -50,13 +50,15 @@ COL_CORRECTION_KIND = "What kind of correction is this?"
 COL_CONFIRMED_BY = "Who confirmed it?"
 COL_CONFIRMED_ON = "When did you hear back?"
 COL_CHANGE = "What should change?"
-COL_FLAGGED = "Have you also flagged this submission?"
 
 COL_RETRACT_ID = "Which flag are you withdrawing?"
 COL_RETRACT_WHY = "What changed your mind?"
 
 COL_CORRECTION_ID = "Which correction are you approving?"
 COL_DISCUSSED_WITH = "Who did you discuss it with?"
+
+COL_CLOSE_REASON = "Why is it being closed?"
+COL_CLOSE_NOTE = "Anything to add?"
 
 # --- Answer values, as the form offers them -------------------------------------------
 ACTION_VERDICT = "Record a verdict on a submission"
@@ -75,6 +77,27 @@ ACTION_CORRECTION = "Submit a correction on behalf of a submitter"
 # lead and sometimes does not is one a curator has to be told how to read.
 ACTION_RETRACT = "Withdraw a flag you placed yourself"
 ACTION_APPROVE_CORRECTION = "Approve a correction (lead curators only)"
+
+# The act that actually finishes a rejected submission. "Reject" above lands on `held`, on
+# purpose, so that a rejection gets a second look; nothing then moved it any further, so a
+# rejected submission stayed live forever -- holding its reserved lineage names, never
+# telling the submitter anything. A maintainer CLI closed that gap on 2026-08-13; this is
+# the curator's own route to it, so that ending a submission does not require somebody
+# with a shell.
+ACTION_CLOSE = "Close a submission for good (lead curators only)"
+
+# Why it is being closed. A closed vocabulary, mapped from what a lead reads to what the
+# decision record stores, for the same reason VERDICT_LABELS exists: "out_of_scope" tells a
+# maintainer what happened and "Not avian haemosporidian data" tells a curator what they
+# are choosing. The stored side is ledger.DECLINE_REASON_CODES, and a test holds the two
+# in agreement.
+CLOSE_REASONS = {
+    "It is already in MalAvi": "duplicate",
+    "Not avian haemosporidian data": "out_of_scope",
+    "A flag on it was never answered": "unresolved_objection",
+    "The records could not be checked against the source": "data_not_verifiable",
+    "Another submission replaces it": "superseded",
+}
 
 # The form speaks to curators; the ledger speaks in its own vocabulary. Mapped here rather
 # than by making the form say "approve", because "Flag for further review" tells a curator
@@ -118,7 +141,7 @@ class Rejected:
 class Action:
     """A parsed, well-formed request to change one submission's review state."""
 
-    kind: str                     # "verdict" | "override" | "correction"
+    kind: str                     # "verdict" | "override" | "correction" | "close" | …
     submission_id: str
     address: str                  # the Google-verified address; resolved by the registry
     at: str                       # ISO 8601 UTC
@@ -126,6 +149,9 @@ class Action:
     # verdict
     verdict: str = ""
     reason_text: str = ""
+    # close: the closed-vocabulary disposition code, which reaches decisions.json. Kept
+    # apart from reason_text, which is free text and stays in the gitignored ledger.
+    reason_code: str = ""
     checked: List[str] = field(default_factory=list)
     # override
     hold_id: str = ""
@@ -236,6 +262,8 @@ def parse_row(row: Dict[str, Any],
         return _parse_retraction(row, submission_id, address, at)
     if action == ACTION_APPROVE_CORRECTION:
         return _parse_correction_approval(row, submission_id, address, at)
+    if action == ACTION_CLOSE:
+        return _parse_close(row, submission_id, address, at)
     return Rejected(f"unknown action {action!r}", row)
 
 
@@ -308,13 +336,13 @@ def _parse_correction(row, submission_id, address, at):
     if not change:
         return Rejected("correction does not say what should change", row)
 
-    # A correction and an acceptance are not the same act. Without a standing flag the
-    # maintainer would apply a change nobody has reviewed in its final form, and the
-    # curator would have approved a version that did not exist when they approved it.
-    if not _text(row.get(COL_FLAGGED)).lower().startswith("yes"):
-        return Rejected(
-            "a correction must accompany a flag: flag the submission, describe the "
-            "correction, and accept once the corrected report exists", row)
+    # The "must accompany a flag" rule is NOT checked here, and the form no longer asks
+    # about it. ledger.record_correction refuses a correction when blocking_holds(entry) is
+    # empty -- from the ledger's own record of what is flagged, rather than from what the
+    # curator remembered to tick. Checking here as well was a second copy of a rule that has
+    # to hold at the write regardless of what reached it, and it turned an honest "no" on
+    # the form into a silently discarded correction. See _parse_correction_approval, which
+    # declines to duplicate the ledger's rules for the same reason.
 
     confirmed_by = _text(row.get(COL_CONFIRMED_BY))
     if not confirmed_by:
@@ -371,6 +399,30 @@ def _parse_correction_approval(row, submission_id, address, at):
                   consulted=[part.strip() for part in re.split(r"[,;]", discussed)
                              if part.strip()],
                   reason_text=_text(row.get(COL_RESOLVED)))
+
+
+def _parse_close(row, submission_id, address, at):
+    """A lead ending a submission MalAvi will not include.
+
+    That the responder is a lead, and that the submission is in a state it can be closed
+    from, are both checked by :func:`ledger.decline` at the write. Not here: a rule copied
+    into the parser is a rule that has to hold in two places, and the one that matters is
+    the one nearest the write.
+
+    What *is* checked here is the reason, because the parser is the last place that knows
+    what the curator was shown. It reaches ``data/decisions.json``, so it is a fixed list
+    rather than a sentence somebody typed.
+    """
+    label = _text(row.get(COL_CLOSE_REASON))
+    reason = CLOSE_REASONS.get(label)
+    if reason is None:
+        return Rejected(
+            f"unknown closing reason {label!r}; the form offers "
+            f"{', '.join(sorted(CLOSE_REASONS))}", row)
+
+    return Action(kind="close", submission_id=submission_id, address=address, at=at,
+                  revision=_revision(row), reason_code=reason,
+                  reason_text=_text(row.get(COL_CLOSE_NOTE)))
 
 
 def prefill_url(form_url: str, entries: Dict[str, Any], submission_id: str,

@@ -51,12 +51,21 @@ can be *read* by anyone.
 | When | What happens |
 |---|---|
 | Immediately | Nothing. The public site is static and will keep working. |
-| Days | Submissions keep arriving in Drive and keep being fetched, but nobody reviews them. |
-| ~60 days idle | **GitHub disables scheduled workflows on a repository with no activity.** It emails a warning first, to the account owner. The daily submission fetch stops after that. |
+| Immediately | **Submissions keep arriving in Drive and nothing collects them.** Nobody is emailed a report, no name is confirmed, no decline is sent, and no 24-hour hold ever elapses, because every one of those steps is a command a person types. A submitter who filed hears nothing at all and has no way to tell. |
+| Days | The Google Form goes on accepting submissions and the public queue goes on showing whatever it showed the day the maintainer stopped. |
+| ~60 days idle | **GitHub disables scheduled workflows on a repository with no activity.** It emails a warning first, to the account owner. This no longer affects the submission fetch — see below — but it will stop any workflow that is later scheduled. |
 | Whenever a token expires | Publishing fails. The site will keep showing the last published version of the data. |
 | Next shinyapps change | The BLAST app may stop. |
 | 2 years with no sign-in | Google deletes `malaviadmin@gmail.com` and everything under it. |
 | Indefinitely | The database itself is safe. The release data is in `malaviR`, on the public site, and in the lifeboat. |
+
+**Nothing here runs on a schedule.** The daily submission fetch this table used to describe
+was a GitHub Actions workflow, and it was deleted on 2026-08-13: it minted a submission's
+permanent public identifier in a job whose filesystem is discarded when it ends, so the same
+submission could be given a different id on the next run. Identifiers are now minted only
+where the mapping survives — on the maintainer's machine, by hand. The trade is deliberate
+and it is the one that matters most on this page: **there is no automation waiting to notice
+that nobody is home.** Corrected 2026-08-14.
 
 ---
 

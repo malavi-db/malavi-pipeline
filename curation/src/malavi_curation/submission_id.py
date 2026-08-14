@@ -78,19 +78,57 @@ def _save_ledger(inbox: Path, ledger: Dict[str, Any]) -> None:
         with os.fdopen(handle, "w", encoding="utf-8") as fh:
             json.dump(ledger, fh, indent=2, ensure_ascii=False)
             fh.write("\n")
+            # os.replace is atomic against interruption, but without the flush+fsync the
+            # renamed inode can still contain zero bytes after a power loss. This file
+            # matters more than most: load_ledger() cannot tell an empty file from a
+            # missing one, so it would return {"next": 1} and the next screen would mint
+            # MALAVI-SUB-<year>-000001 for a different submission entirely. It is also
+            # gitignored, which makes it the only copy of the id-to-submitter mapping that
+            # queue.json, the decision record and every submitter email depend on.
+            # Same treatment as ledger.save() and fetch_verdicts.save_applied().
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(temporary, path)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
 
+    # Persist the rename itself, not just the data.
+    directory = os.open(str(path.parent), os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    except OSError:
+        pass          # some network filesystems refuse to fsync a directory; the data is safe
+    finally:
+        os.close(directory)
+
 
 def submission_id_for(inbox: Path, directory: str,
-                      year: Optional[int] = None) -> str:
+                      year: Optional[int] = None,
+                      mint: bool = True) -> Optional[str]:
     """The identifier for one submission directory, minting one if it has none.
 
     Idempotent by design: calling it twice for the same directory returns the same
     identifier. The daily job runs every day over the same submissions, so anything else
     would issue a new id per run and detach every existing reference.
+
+    **``mint=False`` looks the identifier up and refuses to create one**, returning ``None``
+    when the directory has none. That exists because minting is a *write to persistent
+    state*, and this file's whole premise — "assigned once and never changes" — holds only
+    where that state persists.
+
+    ``submission_ids.json`` is gitignored, so a CI runner never has it: :func:`load_ledger`
+    hands back a fresh ``{"next": 1}`` and the run mints its own sequence from 1, in
+    whatever order the directories happen to sort. Any program whose *output is committed*
+    must therefore never mint, or the public identifier in that output is a number invented
+    on a machine that threw away the mapping at the end of the job.
+
+    Today the two sequences agree by luck: intake directories are named by timestamp, so
+    sorted order is append-only and a full re-fetch reproduces the same numbering. Nothing
+    holds that in place. A submission superseded or removed, a directory that exists only
+    locally (``20260806T210800_DEMO_Testsubmission`` already does), or a fetch returning a
+    subset all shift every number after the gap — and the identifier a submitter was given
+    then refers to somebody else's submission.
     """
     inbox = Path(inbox)
     ledger = load_ledger(inbox)
@@ -98,6 +136,9 @@ def submission_id_for(inbox: Path, directory: str,
     existing = ledger["ids"].get(directory)
     if existing:
         return existing["id"]
+
+    if not mint:
+        return None
 
     year = year or datetime.now(timezone.utc).year
     number = int(ledger["next"])

@@ -77,10 +77,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             outcome = enrollment.enroll_one(entries, record["id"], sub_dir,
                                             track=arguments.track)
             marker = "enrolled " if outcome["created"] else "present  "
+            # The embargo note is printed beside the state note rather than instead of it:
+            # "held out of releases" and "waiting to be screened" are both true at once,
+            # and the first is the one nobody would think to ask about.
+            notes = " -- ".join(n for n in (outcome["note"],
+                                            outcome.get("embargo_note", "")) if n)
             print(f"  [{marker}] {outcome['submission_id']}  {outcome['state']:<17} "
-                  f"{outcome['note']}")
+                  f"{notes}")
             created += int(outcome["created"])
-            advanced += int(not outcome["created"] and bool(outcome["note"]))
+            advanced += int(not outcome["created"] and bool(notes))
 
     print(f"\n{created} enrolled, {advanced} updated, {skipped} skipped.")
     if arguments.dry_run:

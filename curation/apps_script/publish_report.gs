@@ -293,6 +293,8 @@ function confirmNames_(payload) {
 
   var who = String(payload.submitter_name || '').trim();
   var lines = [
+    '[this is an automatic email]',
+    '',
     who ? 'Dear ' + who + ',' : 'Hello,',
     '',
     'This is an automatic message from MalAvi, sent once a curator has approved your',
@@ -324,13 +326,44 @@ function confirmNames_(payload) {
     lines.push('Submission: ' + payload.reference);
   }
 
+  // What happens to the RECORDS, told from what the submitter actually selected rather
+  // than as an "if you asked us to..." conditional the reader has to resolve themselves.
+  //
+  // The two booleans are decided in Python (form_metadata.records_are_held and
+  // records_were_included) and arrive already settled. Deciding them here would put an
+  // untested branch in charge of whether somebody is told their unpublished records are
+  // about to be published.
+  var selections = payload.selections || {};
+  var stage = String(selections.stage || '').trim();
+  var sending = String(selections.sending || '').trim();
+
+  if (stage || sending) {
+    lines.push('');
+    if (stage && sending) {
+      lines.push('You selected: "' + stage + '" data, sending "' + sending + '".');
+    } else {
+      lines.push('You selected: "' + (stage || sending) + '".');
+    }
+  }
+
+  lines.push('');
+  if (!selections.records_included) {
+    // They said they were sending names and sequences only, so the host and geography
+    // records are still to come. Saying so is the whole reason this branch exists.
+    lines.push('Your host and geography records have not reached MalAvi. Please submit');
+    lines.push('those as soon as your study is accepted for publication.');
+  } else if (selections.records_held) {
+    lines.push('Your host and geography records are held until your study is published,');
+    lines.push('as you asked. Let us know when it is accepted and they will go into the');
+    lines.push('next MalAvi data release after that.');
+  } else {
+    lines.push('The records themselves appear in the next MalAvi data release.');
+  }
+
   lines = lines.concat([
     '',
-    'The records themselves appear in the next MalAvi data release. If you asked us to',
-    'hold your data until publication, they are held and this confirmation covers the',
-    'names only.',
-    '',
-    'The MalAvi curators',
+    '--',
+    'MalAvi',
     'https://malavi-db.github.io/'
   ]);
 
@@ -377,21 +410,20 @@ function declineNotice_(payload) {
   var who = String(payload.submitter_name || '').trim();
 
   var lines = [
+    '[this is an automatic email]',
+    '',
     who ? 'Dear ' + who + ',' : 'Hello,',
     '',
     'This is an automatic message from MalAvi. Replies go straight to the curators, so',
-    'please reply to this email with any questions -- a person will answer.',
+    'please reply to this email with any questions.',
     '',
     'A curator has reviewed your submission, and it has not been accepted into MalAvi in',
     'its current form.',
     '',
-    'This is usually something that can be resolved. The most common reasons are a',
-    'workbook that could not be read, records that could not be matched to the paper, or',
-    'sequences that need checking. A curator can tell you which applies to yours, and what',
-    'would be needed.',
+    'The most common reason is new sequences that do not pass quality control checks.',
+    'A curator can tell you the specific issues.',
     '',
-    'Please do write back. We would much rather work through it with you than lose the',
-    'records.'
+    'Please write back and we will determine if we can work through this with you.'
   ];
 
   if (payload.reference) {
@@ -405,7 +437,8 @@ function declineNotice_(payload) {
     'another submission. If you resubmit, propose them again and a curator will check',
     'whether they are still free.',
     '',
-    'The MalAvi curators',
+    '--',
+    'MalAvi',
     'https://malavi-db.github.io/'
   ]);
 
@@ -430,6 +463,8 @@ function notifyCurators_(submissionId, written) {
   var verb = written.action === 'updated' ? 'updated' : 'ready';
   var subject = 'MalAvi: curator report ' + verb + ' (' + submissionId + ')';
   var lines = [
+    '[this is an automatic email]',
+    '',
     'A curator report is ' + (written.action === 'updated'
       ? 'available in a corrected version.'
       : 'ready for review.'),

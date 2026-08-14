@@ -81,6 +81,38 @@ def test_publication_stage_is_read(feeds):
     assert feeds._publication_stage(LIVE_ROW) == "post-publication"
 
 
+QUESTION_EMBARGO = "If your data are unpublished, may we add the records to MalAvi now?"
+
+
+def test_the_three_embargo_answers_all_map(feeds):
+    """The form's answers must keep starting with the words _records_embargo parses."""
+    for answer, expected in (
+            ("Add them now, credited as unpublished", "add-now"),
+            ("Hold them until I confirm the study is accepted", "hold"),
+            ("Not applicable - my data are already published", "")):
+        row = dict(LIVE_ROW, **{QUESTION_EMBARGO: answer})
+        assert feeds._records_embargo(row) == expected, answer
+
+
+def test_a_submission_that_predates_the_question_reads_as_unanswered(feeds):
+    """LIVE_ROW was captured before this question existed, and must not read as add-now.
+
+    Every submission fetched before 2026-08-09 is in this position. Callers treat "" as
+    hold, so the failure mode of an old submission is a curator being asked, not
+    somebody's unpublished records being published without consent.
+    """
+    assert QUESTION_EMBARGO not in LIVE_ROW
+    assert feeds._records_embargo(LIVE_ROW) == ""
+
+
+def test_the_embargo_question_is_not_confused_with_the_stage_question(feeds):
+    """Both questions contain "unpublished"; only one also contains "add"."""
+    row = dict(LIVE_ROW, **{QUESTION_EMBARGO: "Hold them until I confirm the study is "
+                                              "accepted"})
+    assert feeds._records_embargo(row) == "hold"
+    assert feeds._publication_stage(row) == "post-publication"
+
+
 def test_submitter_details_are_read(feeds):
     assert feeds._find(LIVE_ROW, "first", "last name") == "Vincenzo Ellis"
     assert feeds._find(LIVE_ROW, "institution") == "UD"

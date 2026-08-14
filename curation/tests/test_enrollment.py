@@ -201,3 +201,57 @@ def test_the_shared_readers_agree_with_the_reservation_feed(tmp_path):
 
     assert sorted(module.claims_in(sub_dir)) == sorted(enrollment.claimed_names(sub_dir))
     assert module.suggestions_in(sub_dir) == enrollment.name_suggestions(sub_dir)
+
+
+# ------------------------------------------------- what the queue has already claimed
+#
+# The bug these pin: the screen's only notion of "taken" was the RELEASED names in
+# db_snapshot.json, so a name claimed by a submission that arrived a week earlier passed
+# the screen with no comment, and the free-name search could offer submission B exactly
+# the name submission A had already been offered. Both submitters were then told their
+# names were confirmed, and the clash surfaced at ingest -- possibly after one of them had
+# deposited the name in GenBank. The website's checker consulted these claims all along;
+# the curator pipeline did not.
+
+def test_a_name_another_submission_claimed_is_reported_as_claimed(tmp_path):
+    make_submission(tmp_path, "20260101T000000_First", lineages=("TUMIG31",))
+    claims = enrollment.standing_claims(tmp_path)
+    assert claims == {"TUMIG31": "20260101T000000_First"}
+
+
+def test_the_submission_being_screened_does_not_collide_with_itself(tmp_path):
+    """check_template.py re-runs after every correction, and by then this submission's
+    own names are in its own screen.json."""
+    make_submission(tmp_path, "20260101T000000_Mine", lineages=("TUMIG31",))
+    assert enrollment.standing_claims(tmp_path, exclude=["20260101T000000_Mine"]) == {}
+
+
+def test_a_name_the_release_already_owns_is_not_a_reservation(tmp_path):
+    """It is a rename the curator will raise with the submitter, or a record of an
+    existing lineage. Either way the snapshot already answers it."""
+    make_submission(tmp_path, "20260101T000000_First", lineages=("TUMIG01",))
+    assert enrollment.standing_claims(tmp_path, known={"TUMIG01"}) == {}
+
+
+def test_the_free_alternative_is_what_gets_reserved(tmp_path):
+    """A name the screen replaced reserves the REPLACEMENT. Reserving the taken name
+    would advertise a reservation that was never going to be granted, and leave the free
+    name unclaimed for the next submitter to be offered."""
+    make_submission(tmp_path, "20260101T000000_First", lineages=("TUMIG01",),
+                    suggestions={"TUMIG01": "TUMIG32"})
+    claims = enrollment.standing_claims(tmp_path, known={"TUMIG01"})
+    assert claims == {"TUMIG32": "20260101T000000_First"}
+
+
+def test_two_submissions_claiming_one_name_is_reported_once(tmp_path):
+    """Which of them wins is decided by arrival date, in build_name_reservations.py.
+    The only question here is whether the name is spoken for at all."""
+    make_submission(tmp_path, "20260101T000000_First", lineages=("TUMIG31",))
+    make_submission(tmp_path, "20260202T000000_Second", lineages=("TUMIG31",))
+    claims = enrollment.standing_claims(tmp_path)
+    assert set(claims) == {"TUMIG31"}
+
+
+def test_an_unscreened_submission_claims_nothing_yet(tmp_path):
+    make_submission(tmp_path, "20260101T000000_Waiting", screen=False)
+    assert enrollment.standing_claims(tmp_path) == {}
