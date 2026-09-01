@@ -9,6 +9,8 @@ import importlib.util
 import json
 from datetime import datetime, timedelta, timezone
 
+import random
+
 import pytest
 import yaml
 
@@ -403,8 +405,18 @@ def test_two_templates_in_one_submission_do_not_delete_each_other(cli, project):
 # accession. The store carried two lineages under one name and only a build-time warning
 # noticed.
 
-WINDOW = "A" * 479
-OTHER_WINDOW = "C" + "A" * 478
+# A 479 bp stand-in for a barcode: deterministic, but genuinely aperiodic.
+#
+# Two earlier versions of this constant were wrong in ways that quietly disabled the tests
+# using it. "A" * 479 is a homopolymer, which aligns equally well at every offset, so
+# registration ties broke arbitrarily. A short arithmetic formula looked random but was
+# periodic, so a 300 bp slice of it matched convincingly at a spurious offset 132 bases
+# away. A seeded PRNG has neither problem: every slice registers at exactly one offset.
+_RNG = random.Random(20260820)
+WINDOW = "".join(_RNG.choice("ACGT") for _ in range(479))
+# One base different, so it is a different sequence under the same proposed name -- which
+# is the collision these fixtures exist to test -- while still registering at offset 0.
+OTHER_WINDOW = ("C" if WINDOW[0] != "C" else "G") + WINDOW[1:]
 
 
 def lineage_workbook(path, new_lineages, sequences, hosts_rows):

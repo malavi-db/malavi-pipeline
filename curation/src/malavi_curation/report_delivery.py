@@ -267,6 +267,44 @@ def deliver_name_confirmation(
     )
 
 
+def build_verdict_notice_payload(submission_id: str, *, subject: str, body: str,
+                                 actor_email: str = "",
+                                 issued_at: Optional[int] = None) -> Dict[str, Any]:
+    """The payload for telling the other curators what somebody just recorded.
+
+    The text is composed here rather than in the Apps Script, because the things worth
+    saying -- which verdict id, whose objection, what state it left the submission in,
+    which link answers it -- are all in the ledger, and the script cannot see the ledger.
+
+    ``actor_email`` is who performed the act; the endpoint drops them from the recipient
+    list. It does **not** carry the recipients: the endpoint sends only to its own
+    CURATORS array, so a leaked secret cannot be used to mail anyone else.
+    """
+    if not subject.strip() or not body.strip():
+        raise DeliveryError(
+            f"{submission_id}: a verdict notice needs both a subject and a body.")
+    return {
+        "action": "verdict_notice",
+        "submission_id": submission_id,
+        "subject": subject.strip(),
+        "body": body.strip(),
+        "actor_email": (actor_email or "").strip(),
+        "issued_at": int(time.time()) if issued_at is None else int(issued_at),
+    }
+
+
+def deliver_verdict_notice(
+        submission_id: str, *, subject: str, body: str, actor_email: str = "",
+        transport: Optional[Callable[[str, bytes], Dict[str, Any]]] = None) -> Delivered:
+    """Tell every curator but the actor that a verdict was recorded."""
+    payload = build_verdict_notice_payload(submission_id, subject=subject, body=body,
+                                           actor_email=actor_email)
+    reply = _send(payload, transport)
+    return Delivered(submission_id=submission_id, file_id="", url="",
+                     action=str(reply.get("action", "emailed")),
+                     notified=int(reply.get("notified", 0) or 0))
+
+
 def build_decline_payload(submission_id: str, *, to: str, submitter_name: str,
                           reference: str = "",
                           issued_at: Optional[int] = None) -> Dict[str, Any]:

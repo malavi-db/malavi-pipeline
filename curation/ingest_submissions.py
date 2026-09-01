@@ -152,10 +152,12 @@ def ingest_one(store: Dict[str, List[Dict[str, Any]]],
                           List[str]]:
     """Put one submission's workbooks into ``store`` in place.
 
-    Returns ``(counts by table, curator notes, values this would blank, collisions)``.
-    **When ``collisions`` is non-empty the store is not touched at all** and the caller
-    must refuse the submission: a lineage name that is already taken cannot be written
-    without putting two sequences under one key.
+    Returns ``(counts by table, curator notes, values this would blank, refusals)``.
+    **When ``refusals`` is non-empty the store is not touched at all** and the caller must
+    refuse the submission. Two things refuse: a lineage name that is already taken, which
+    cannot be written without putting two sequences under one key; and a sequence that is
+    not a shape a barcode arrives in, which cannot be written without putting a misframed
+    row into the alignment.
 
     ``corrections`` is the submission's agreed renames (``ledger.Entry.name_corrections``),
     applied here so that the name MalAvi stores is the name the curator approved rather
@@ -184,10 +186,27 @@ def ingest_one(store: Dict[str, List[Dict[str, Any]]],
 
     # ...and then refused if it is still a name somebody else holds. Checked against the
     # store before a single row is merged, so a refusal leaves nothing behind.
-    collisions = store_ingest.colliding_lineages(
+    refusals = store_ingest.colliding_lineages(
         store, incoming.get("lineages", []), submission_id)
-    if collisions:
-        return {}, notes, [], collisions
+
+    # A sequence that is not a shape a barcode arrives in is refused for the same reason a
+    # taken name is: the row would be wrong in a way nothing downstream could detect. The
+    # length check inside lineage_rows is not enough -- NECMON01 was exactly 479 bp and
+    # still two bases out of the window, and passed it in silence.
+    refusals.extend(store_ingest.misframed_sequences(
+        store, incoming.get("lineages", []), submission_id))
+
+    if refusals:
+        return {}, notes, [], refusals
+
+    # Everything left fits inside the window, so padding it there is arithmetic and not a
+    # judgment. Done before the merge, so the store only ever holds full-window rows: a
+    # partial barcode -- a forward-primer-only read, say -- is shorter as sent, and storing
+    # it at that length would leave a ragged row among 5,368 aligned ones.
+    if incoming.get("lineages"):
+        incoming["lineages"], placement_notes = store_ingest.place_sequences(
+            incoming["lineages"], store, submission_id)
+        notes.extend(placement_notes)
 
     counts: Dict[str, Dict[str, int]] = {}
     blanked: List[Dict[str, str]] = []
@@ -372,14 +391,15 @@ def main(argv=None) -> int:
         entry = (entries or {}).get(submission_id)
         corrections = dict(getattr(entry, "name_corrections", {}) or {})
 
-        counts, notes, lost, collisions = ingest_one(
+        counts, notes, lost, refusals = ingest_one(
             store, submission_id, workbooks, args.release, corrections)
-        if collisions:
+        if refusals:
             # Nothing was staged for this submission. Refusing is the only safe answer:
             # writing a lineage name somebody else holds corrupts the key every downstream
             # join uses, and it cannot be undone by a later correction without knowing
-            # which of the two rows was which.
-            refused.append(f"{submission_id}: " + " ".join(collisions))
+            # which of the two rows was which. A misframed sequence is worse still -- it
+            # looks like data, so nothing downstream reports it as missing.
+            refused.append(f"{submission_id}: " + " ".join(refusals))
             continue
 
         blanked.extend(lost)

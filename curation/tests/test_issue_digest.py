@@ -80,7 +80,7 @@ def _finding_run():
 
 class TestSubmissionIds:
     def test_minted_ids_carry_no_identity(self, tmp_path):
-        minted = sid.submission_id_for(tmp_path, "20260727T233146_Vincenzo_Ellis")
+        minted = sid.submission_id_for(tmp_path, "20260727T233146_A_Person")
         assert sid.is_opaque(minted)
         for fragment in ("Vincenzo", "Ellis", "20260727"):
             assert fragment not in minted
@@ -172,7 +172,7 @@ class TestDigestPrivacy:
     def test_an_intake_directory_name_is_refused_outright(self):
         # Coercing it would hide the mistake. Raising makes it impossible to ship.
         with pytest.raises(ValueError, match="not a minted submission id"):
-            build_digest("20260727T233146_Vincenzo_Ellis", _run())
+            build_digest("20260727T233146_A_Person", _run())
 
     def test_the_digest_has_exactly_the_allowed_fields(self):
         # An allowlist only works if nothing can be added without touching it.

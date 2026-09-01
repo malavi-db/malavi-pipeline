@@ -87,12 +87,15 @@ import os
 import sys
 import urllib.error
 import urllib.request
+import urllib.parse
 from datetime import timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
-from malavi_curation import google_auth, ledger, verdicts  # noqa: E402
+from malavi_curation import (  # noqa: E402
+    curators, google_auth, ledger, public_feeds, report_delivery, verdicts,
+)
 from malavi_curation.config import load_config, repo_root  # noqa: E402
 
 # Which responses have already been acted on. Lives in the gitignored intake tree beside
@@ -126,7 +129,51 @@ def fetch_rows(sheet_id: str, token: str) -> List[Dict[str, str]]:
         raw = response.read()
     # utf-8-sig: Google prefixes its CSV export with a byte-order mark, which would
     # otherwise become part of the first column's name and stop every lookup on it.
-    return list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+    return read_rows(raw.decode("utf-8-sig"))
+
+
+def duplicate_columns(header: Sequence[str]) -> Dict[str, int]:
+    """Column names that appear more than once, and how often. Empty when all are unique.
+
+    Only names the parser actually reads are reported. The responses sheet accumulates
+    orphan columns from every hand edit to the form -- a question that was deleted, or
+    replaced rather than renamed, leaves its column behind forever -- and most of them are
+    harmless clutter this program never looks at.
+
+    A repeated name is not clutter. ``csv.DictReader`` keeps the LAST column of a repeated
+    name, so a stale empty column sitting to the right of a live one silently answers in
+    its place, and every read of that field comes back "". Two ways this has already
+    happened here: two questions given the same title (see verdicts.COL_CONCLUDED), and a
+    question re-created during a hand edit so that its old column survived beside the new
+    one. Neither is visible in the form; both are visible here.
+    """
+    from collections import Counter
+    counts = Counter(name for name in header if name)
+    reads = verdicts.COLUMNS_READ
+    return {name: count for name, count in counts.items() if count > 1 and name in reads}
+
+
+def read_rows(text: str) -> List[Dict[str, str]]:
+    """Parse the exported CSV, refusing a header that would silently misread a column."""
+    reader = csv.DictReader(io.StringIO(text))
+    header = reader.fieldnames or []
+    repeated = duplicate_columns(header)
+    if repeated:
+        listing = "\n".join(
+            f"    {name!r} appears {count} times" for name, count in sorted(repeated.items()))
+        raise DuplicateColumns(
+            f"the responses sheet has repeated column headers that this program reads:\n"
+            f"{listing}\n"
+            f"Only the RIGHTMOST of each is read, so if it is an orphan left behind by a "
+            f"hand edit, every answer to that question arrives empty and nothing else "
+            f"complains. The sheet is the place to fix it: open it, check which column the "
+            f"live form actually fills, and delete the others. Verify afterwards by "
+            f"submitting one response and re-reading the header.")
+    return list(reader)
+
+
+class DuplicateColumns(RuntimeError):
+    """Raised when the responses sheet would misread a column the parser depends on."""
 
 
 def fingerprint(row: Dict[str, Any]) -> str:
@@ -258,6 +305,125 @@ def _advance_after_verdict(entry: ledger.Entry, verdict: str, actor: str,
     return "", f"no state change from {entry.state!r}"
 
 
+def _who(curator_id: str, fallback_address: str = "") -> str:
+    """A curator as a person, not as a database key.
+
+    The ledger stores ids -- "vellis", "sari" -- because an id is stable when a name or
+    an address changes. An email addressed to curators should not show them: nobody
+    signed up as "sari". The registry has the name and the address, and this reads them
+    out, falling back to the address and then to the id if the registry cannot say.
+    """
+    try:
+        registry = curators.load_registry()
+    except Exception:                                          # noqa: BLE001
+        registry = {}
+    person = registry.get(curator_id)
+    if person is not None:
+        name = (getattr(person, "name", "") or "").strip()
+        address = (getattr(person, "email", "") or "").strip()
+        if name and address:
+            return f"{name} ({address})"
+        return name or address or curator_id
+    return fallback_address or curator_id
+
+
+def _prefilled_verdict_link(config: Dict[str, Any], submission_id: str,
+                            revision: Any, hold_id: str = "") -> str:
+    """The verdict form with the submission id and revision already in it.
+
+    A curator answering a notification should not have to copy an identifier out of an
+    email; that is the step that gets mistyped, and a mistyped id files a verdict against
+    a submission that does not exist. The entry ids are pinned in config/project.yml
+    because Google re-mints them whenever a question is deleted and re-created.
+
+    ``hold_id`` fills the override page's "Which hold are you clearing?" as well, so a
+    lead answering a flag has nothing at all to type. Read off the live form 2026-08-20;
+    the ids move if a question is ever deleted and re-created rather than renamed.
+    """
+    review = config.get("review") or {}
+    url = str(review.get("verdict_form_url") or "")
+    entries = review.get("verdict_form_entries") or {}
+    if not url or not entries.get("submission_id"):
+        return url
+    fields = {f"entry.{entries['submission_id']}": submission_id}
+    if revision not in (None, "") and entries.get("revision"):
+        fields[f"entry.{entries['revision']}"] = str(revision)
+    if hold_id and entries.get("hold_id"):
+        fields[f"entry.{entries['hold_id']}"] = str(hold_id)
+    joiner = "&" if "?" in url else "?usp=pp_url&"
+    return url + joiner + urllib.parse.urlencode(fields)
+
+
+def _verdict_notice(outcome: Dict[str, Any], form_url: str,
+                    entries: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """The subject and body telling the other curators what just happened.
+
+    Returns None for anything not worth an email -- a response that could not be parsed,
+    or one filed for a maintainer, both of which are the maintainer's problem and not a
+    curator's.
+
+    Why the maintainer's side composes this: the verdict id, whose objection was set
+    aside, the state the submission landed in and the link that answers it all live in
+    the ledger, which the Apps Script cannot see.
+    """
+    if outcome.get("status") != "applied":
+        return None
+    submission = str(outcome.get("submission") or "")
+    who = _who(str(outcome.get("curator") or ""),
+               str(outcome.get("address") or ""))
+    reason = str(outcome.get("reason_text") or "").strip()
+    state = str(outcome.get("state") or "")
+    kind = outcome.get("kind")
+
+    lines = ["[this is an automatic email]", ""]
+
+    if kind == "verdict":
+        verdict = str(outcome.get("verdict") or "")
+        word = {"approve": "accepted", "hold": "flagged for further review",
+                "reject": "rejected"}.get(verdict, verdict)
+        subject = f"MalAvi: {submission} {word} by {who}"
+        lines += [f"{who} has {word} submission {submission}.",
+                  f"This is verdict {outcome.get('verdict_id', '')}."]
+        if reason:
+            lines += ["", "They wrote:", f"    {reason}"]
+        if verdict == "hold":
+            lines += ["",
+                      "A flag outranks approvals: the submission cannot proceed while it "
+                      "stands. It is answered by the curator who raised it withdrawing "
+                      "it, or by a lead curator clearing it."]
+    elif kind == "override":
+        overridden = (_who(str(outcome.get("overridden") or ""))
+                      if outcome.get("overridden") else "another curator")
+        subject = f"MalAvi: {who} cleared a hold on {submission}"
+        lines += [f"{who}, as a lead curator, has cleared {overridden}'s hold "
+                  f"({outcome.get('hold_id', '')}) on submission {submission}.",
+                  "",
+                  "Clearing a hold sets aside the objection so the submission can move "
+                  "again. It is recorded permanently, with who was consulted."]
+        if reason:
+            lines += ["", "They wrote:", f"    {reason}"]
+    elif kind == "retraction":
+        subject = f"MalAvi: {who} withdrew a flag on {submission}"
+        lines += [f"{who} has withdrawn their own flag on submission {submission}."]
+    else:
+        return None
+
+    lines += ["", f"The submission is now: {state}.", ""]
+    if form_url:
+        filled = ("submission id, revision and the hold id are all already filled in"
+                  if (kind == "verdict" and outcome.get("verdict") == "hold")
+                  else "submission id and revision are already filled in")
+        lines += [f"To record your own verdict, or to answer this one — the {filled}:",
+                  f"    {form_url}"]
+        if kind == "verdict" and outcome.get("verdict") == "hold":
+            lines += [f"That link is set to clear this hold ({outcome.get('verdict_id', '')}) "
+                      f"if that is what you decide; choose \"Clear another curator's "
+                      f"hold\" and the id is already in it."]
+    lines += ["", "--",
+              "Confidential: a submission can contain unpublished sequences."]
+    return subject, "\n".join(lines)
+
+
 def apply_action(entries: Dict[str, ledger.Entry], action: verdicts.Action,
                  config: Dict[str, Any],
                  registry_path: Optional[Path] = None) -> Dict[str, str]:
@@ -281,7 +447,8 @@ def apply_action(entries: Dict[str, ledger.Entry], action: verdicts.Action,
                            "typed rather than carried by a prefilled link")}
 
     base = {"submission": action.submission_id, "kind": action.kind,
-            "address": action.address, "at": action.at}
+            "address": action.address, "at": action.at,
+            "revision": getattr(action, "revision", None)}
 
     try:
         if action.kind == "verdict":
@@ -299,6 +466,8 @@ def apply_action(entries: Dict[str, ledger.Entry], action: verdicts.Action,
                 entry, action.verdict, actor=stored.curator, at=action.at, config=config)
             return {**base, "status": "applied", "verdict": action.verdict,
                     "verdict_id": stored.id, "state": entry.state,
+                    "curator": stored.curator,
+                    "reason_text": action.reason_text or "",
                     "detail": f"state {moved}" if moved else f"verdict recorded; {why_not}"}
 
         if action.kind == "override":
@@ -315,9 +484,14 @@ def apply_action(entries: Dict[str, ledger.Entry], action: verdicts.Action,
                                       config=config)
                 except ledger.LedgerError:
                     pass
+            overridden = next((v.curator for v in entry.verdicts
+                               if v.id == action.hold_id), "")
             return {**base, "status": "applied", "hold_id": action.hold_id,
-                    "state": entry.state, "detail": f"hold {action.hold_id} cleared by "
-                                                    f"{record.by}"}
+                    "state": entry.state, "curator": record.by,
+                    "overridden": overridden,
+                    "reason_text": action.reason_text or "",
+                    "detail": f"hold {action.hold_id} cleared by "
+                              f"{record.by}"}
 
         if action.kind == "retraction":
             record = ledger.retract_verdict(entry, action.target_id, action.address,
@@ -385,6 +559,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--from-csv", default=None, type=Path,
                         help="read responses from a local CSV instead of Google, for "
                              "testing the applier without a credential")
+    parser.add_argument("--no-publish", action="store_true",
+                        help="do not rebuild and publish the public queue afterwards")
     arguments = parser.parse_args(argv)
 
     config = load_config()
@@ -439,6 +615,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                       file=sys.stderr)
                 return 1
             raise
+        except DuplicateColumns as exc:
+            # A stack trace here would bury the one thing worth reading. Nothing has been
+            # parsed and nothing recorded, so there is no partial state to explain.
+            print(f"\n{exc}", file=sys.stderr)
+            return 1
         print(f"verdict sheet: {len(rows)} row(s)\n")
 
     applied = load_applied(applied_path)
@@ -494,11 +675,54 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("\n[dry-run] nothing was written to the review ledger or the applied ledger.")
         return 0
 
+    # --- tell the other curators -----------------------------------------------------
+    #
+    # After the lock is released and both ledgers are on disk, never before. A verdict
+    # that has been recorded but not announced is recoverable -- run this again, or say
+    # it in person. A verdict announced but not recorded is not.
+    #
+    # Each send is guarded on its own. One address bouncing must not cost the other
+    # curators their notification, and no delivery failure may reach the caller as a
+    # failure of the fetch, which has already succeeded by this point.
+    for outcome in results.values():
+        composed = _verdict_notice(
+            outcome,
+            _prefilled_verdict_link(
+                config, str(outcome.get("submission") or ""), outcome.get("revision"),
+                # Only for a hold: the link then answers the very thing being announced.
+                hold_id=(str(outcome.get("verdict_id") or "")
+                         if outcome.get("verdict") == "hold" else "")),
+            {})
+        if not composed:
+            continue
+        subject, body = composed
+        try:
+            delivered = report_delivery.deliver_verdict_notice(
+                str(outcome.get("submission") or ""), subject=subject, body=body,
+                actor_email=str(outcome.get("address") or ""))
+            print(f"  [notified] {outcome.get('submission')}  "
+                  f"{delivered.notified} curator(s)")
+        except Exception as exc:                                   # noqa: BLE001
+            print(f"  [notify failed] {outcome.get('submission')}  {exc}",
+                  file=sys.stderr)
+
     # --- summary ---------------------------------------------------------------------
     counts: Dict[str, int] = {}
     for outcome in results.values():
         counts[outcome["status"]] = counts.get(outcome["status"], 0) + 1
     print("\n" + ", ".join(f"{count} {status}" for status, count in sorted(counts.items())))
+
+    # --- the public queue ------------------------------------------------------------
+    # A verdict changes what the site should say, so the site is brought up to date here
+    # rather than waiting for someone to remember. Nothing about this can fail the run:
+    # the verdicts are already written to the ledger, which is the record.
+    #
+    # Note that an approval publishes no visible change until its publish hold elapses --
+    # see build_site_feeds.public_review_state -- so the normal result of this call right
+    # after an approval is "the published queue was already current". That is correct.
+    if counts.get("applied") and not arguments.dry_run and not arguments.no_publish:
+        print("")
+        public_feeds.refresh()
 
     # Anything that is not a clean application wants a person to look at it. Exit 2 rather
     # than 1 so a scheduled job can distinguish "responses need attention" from "the job

@@ -1,7 +1,7 @@
 """Stable, opaque identifiers for submissions.
 
 A submission arrives in a directory named after the person who sent it —
-``20260727T233146_Vincenzo_Ellis``. That name is fine where the submission itself lives,
+``20260727T233146_A_Person``. That name is fine where the submission itself lives,
 which is a gitignored tree only curators can read. It is not fine anywhere else, and
 "anywhere else" turns out to be a long list: a GitHub issue's metadata, an artifact
 filename, a workflow log, the decision record, and the notification email that GitHub sends

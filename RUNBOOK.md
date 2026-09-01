@@ -396,6 +396,82 @@ every verdict they recorded previously.
 
 ---
 
+## 3ca. Appoint a curator — the whole checklist ✅ (written 2026-09-01)
+
+Adding someone to `config/curators.yml` makes their verdicts **count**. It does not make
+them **arrive**, and it does not let them **read** anything. Those are three separate
+grants in three different places, and a curator who has only the first will be trusted by
+the software and never hear from it. Do all five steps, in this order.
+
+Everything except step 1 is done in a browser, signed in as the operational account.
+
+**1. The registry — the only step in this repository.**
+Add an entry to `config/curators.yml` (see §3c for the shape). `role: curator` unless they
+have agreed to be a lead; `active: true`. Commit it. Verify with the snippet in §3c: the
+new id must appear with the role and `active=True` you intended.
+
+**2. The two Apps Script notification lists — this is what sends email.**
+`script.google.com`, signed in as the operational account. Both projects hold a `CURATORS`
+array, and both need the address:
+
+| Project | File | Redeploy after editing? |
+|---|---|---|
+| MalAvi report publisher | `publish_report.gs` | **Yes** — Deploy > Manage deployments > edit the existing deployment > New version |
+| MalAvi Submission Notifier | `notify_on_submission.gs` | No — it runs from a form-submit trigger |
+
+> **Edit the array in place in the Apps Script editor. Do not paste the repository copy of
+> the `.gs` over the live one.** The published copies of these files carry
+> `PASTE_THE_..._HERE` placeholders where the folder id and the shared secret live, so
+> pasting the whole file blanks both and report publishing stops working. This is the same
+> warning as §1c.
+
+Someone in the registry but not in these arrays is a curator whose verdicts count and who
+is never told a submission arrived. That is the right state for someone who has agreed to
+help but has not been told yet — and the wrong state for anyone else.
+
+**3. Drive sharing — this is what lets them read.** Three folders, all **Viewer**, all
+**General access: Restricted**, none ever link-shared. Ids are in `CUSTODY_PRIVATE.md`.
+
+- **The curator-reports folder.** Without it the report link in their email opens a
+  permission error, which is the failure they will hit first and the one that looks most
+  like the system being broken.
+- **The two submission upload folders.** The arrival email lists the submitter's uploads
+  as links; a curator who cannot open them is shown a door with no key. Note the standing
+  exception in `config/project.yml`: these two are for **appointed** curators only, not for
+  someone helping test the machinery.
+
+**4. Check they can actually answer the verdict form.** The form asks Google to verify the
+responder's address, so the address in the registry has to be one they can *sign in to
+Google with*. A personal Gmail always is. An institutional address only is if the
+institution runs Google Workspace, or they have attached it to a Google account.
+
+Check this before the first report goes out, not after. If an address will not work, the
+two ways out are:
+
+- add a Google-capable address as an `aliases:` entry on their registry record — the
+  verdict still resolves to them (§3c); or
+- have them reply by email and record the verdict yourself with `--actor` (§3db), which
+  attributes it correctly and leaves the same audit trail.
+
+**5. Send them the guide.** `docs/curating.html` on the live site, and the example report
+PDF it links to. That page is the whole job description; there is nothing else to teach.
+
+### Afterwards: check the number of leads
+
+Only a **lead** can clear a hold placed by another curator. With one lead, every
+disagreement between two other curators has to come back to that one person, and if they
+are unavailable the submission sits. Appointing curators is the moment to ask whether a
+second lead is wanted — it is a one-word change in `config/curators.yml`, and it is not a
+courtesy to hand someone unasked.
+
+### Removing a curator
+
+The reverse of the above, and it is four places, not one: `active: false` in the registry
+(never delete — see §3c), the address out of **both** `CURATORS` arrays, and access
+removed on all three Drive folders.
+
+---
+
 ## 3d. The review loop ✅ (operator commands added 2026-08-07)
 
 `curation/src/malavi_curation/ledger.py` holds the states, the verdict rules and the two
@@ -500,6 +576,24 @@ What to expect:
 - A correction whose flag has since been withdrawn is **refused**, not applied — at that
   point the submission is back in ordinary review and somebody may already have accepted it.
 
+> ⚠️ **This program changes no data, and exits 3 to say so.** The correction is free text a
+> curator typed; nothing parses it, deliberately — a program that guessed which cell "the
+> host is *Turdus merula*, not *T. migratorius*" meant would be inferring data from prose.
+> So the value itself changes in one of two places, both of which need you:
+>
+> 1. **The submitter sends a corrected workbook.** Re-screen and re-ingest; the fix arrives
+>    with their rows, because ingest reads the workbook.
+> 2. **You correct the store** with `correct_store.py` (§8a) *after* this submission has
+>    been ingested — the path for a fix the curators settled between themselves, where
+>    there is nothing to ask the submitter for. Before ingest there is nothing to edit but
+>    the workbook, which stays untouched by design.
+>
+> The run prints the exact follow-up for each correction, and exits **3** rather than 0
+> until one of the two has been done. Until 2026-08-14 it exited 0 and said nothing: the
+> revision bumped, the report regenerated from the unchanged workbook and said exactly what
+> it had said before, curators re-approved, ingest wrote the uncorrected value, and every
+> gate reported success.
+
 ---
 
 ## 3db. Close a submission — decline, withdraw, or wait ✅ (built 2026-08-13)
@@ -520,6 +614,10 @@ and the submitter was never told anything.
 # we asked them something and are waiting; starts the 60-day clock
 .venv/bin/python curation/close_submission.py --submission MALAVI-SUB-2026-000004 \
     --ask --apply
+
+# they came back with resequenced data; revive the ORIGINAL submission
+.venv/bin/python curation/close_submission.py --submission MALAVI-SUB-2026-000004 \
+    --reopen --actor vaellis@udel.edu --apply
 ```
 
 Leave off `--apply` to see what it would do. Exit **1** means the ledger refused the move
@@ -555,8 +653,10 @@ either, because nothing is being disposed of.
 
 What to expect:
 
-- All three **release the reserved lineage names** and drop the submission out of the public
-  queue, which lists live submissions only.
+- **`--decline` and `--withdraw` release the reserved lineage names. `--ask` does not, and
+  neither does the dormancy that follows it** (changed 2026-08-20 — see "Rejection and
+  resubmission" below). All of them drop the submission out of the public queue, which
+  lists live submissions only; `--reopen` puts it back on.
 - **An approved submission cannot be declined.** Somebody has to flag it first, and that
   flag is attributed to them — a decline follows an objection, it does not replace one.
 - **A withdrawal is terminal with no way back.** A decline can be reopened, and that is
@@ -566,6 +666,49 @@ What to expect:
 - After a decline, `notify_submitters.py` sends the decline notice once the same 24-hour
   wait an approval gets has elapsed — here it gives anyone a window to notice a mistake
   before a person is told their work was refused. Run `notify_submitters.py` after this.
+- **`--reopen` refuses a live submission**, and that refusal is load-bearing rather than
+  fussy. `held -> in_review` is a legitimate transition — it is what clearing a hold does —
+  and `transition()` guards only `approved` and `released`, because the lead-only rule and
+  the consultation record live in the override path. Without the check, `--reopen` would
+  walk a held submission back to `in_review` with the objection still standing and nobody
+  recorded as having cleared it. It also refuses `withdrawn` and `released`, which are
+  terminal.
+
+### Rejection and resubmission — reopen the original ✅ (built 2026-08-20)
+
+**The commonest curator action is not a verdict. It is "resequence this and send it back."**
+Staffan Bensch, 2026-08-20: indels and grouped SNPs are things he catches often, and his
+routine response is to write to the submitter and ask for the sequence to be re-read.
+
+When that data arrives, **reopen the original submission — do not treat it as a new one.**
+
+```bash
+# 1. the corrected workbook goes into the ORIGINAL submission directory
+#    (reopening moves the ledger, not files)
+# 2. revive it
+.venv/bin/python curation/close_submission.py --submission <id> --reopen \
+    --actor vaellis@udel.edu --apply
+# 3. re-screen, which rebuilds the report from the new workbook
+.venv/bin/python curation/check_template.py curation/intake/submissions/<dir>/
+# 4. send the curators the corrected report; the endpoint updates it in place, so
+#    the link already in their inbox starts showing the new version
+.venv/bin/python curation/publish_report.py <id>
+```
+
+Why not just have them file the form again: a fresh submission mints a **new identifier**
+and a **new date**, and name reservation priority is earliest-timestamp-wins. A submitter
+who spent three months at the bench because we asked them to would come back behind anyone
+who claimed their lineage name in the meantime. Reopening keeps the identifier, the original
+date and the claim.
+
+**A dormant submission keeps its reserved names indefinitely.** The 60-day timeout used to
+give them back; since 2026-08-20 it does not. Dormancy records that we have stopped
+expecting a prompt answer — not that the submitter forfeited anything. If the name went back
+and somebody else were issued it, MalAvi could end up holding two different sequences under
+one name, which is the single failure the reservation system exists to prevent, and the
+person penalized would be the one who did what we asked. **Declining is now the only thing
+that returns a name**, which is why `dormant -> declined` was added to the transition
+table.
 
 ---
 
@@ -622,6 +765,41 @@ rename was applied: the sequences differ, so this would put two lineages under o
 Fix it by recording the agreed name in the ledger and ingesting again. Two rows under one
 lineage name break every join that treats the name as a key, duplicate a tip label in the
 alignment, and cannot be untangled afterwards, so this refuses rather than warning.
+
+**A sequence that is not in the barcode reading frame is refused the same way**
+(added 2026-08-20):
+
+```
+REFUSED MALAVI-SUB-2026-000006: NECMON01: 479 bp beginning at frame position 3 is not a
+shape a correctly processed barcode arrives in (479 bp at position 1 = Sanger (full
+window); 476 bp at position 2 = leuc; 478 bp at position 2 = haem). ...
+```
+
+The length check inside `lineage_rows` was not enough: NECMON01 was **exactly 479 bp** and
+still two bases out of the window, which put it at 39% identity to its own clade instead of
+92%, and it passed in silence. The screen had already worked this out and the curator report
+had drawn the registered copy — ingest read the raw workbook cell and threw that away. This
+is the re-check at the moment of the write.
+
+**Short sequences are normal and are not refused.** 3,340 of MalAvi's 5,368 lineages hold
+fewer than 479 unambiguous bases — `ABSUP01` has 326 real bases behind 153 leading gaps.
+Sequencing with the forward primer only, or a read that failed at one end, gives a perfectly
+good partial barcode. It is padded into the window with `-` (the character the store uses:
+79,500 of them against 800 `N`) and stored, so it is indistinguishable from the partial
+lineages MalAvi already holds. Padding is arithmetic, not judgment, and the note says what
+was done.
+
+**What is refused is a placement that would discard real bases.** A partial barcode fits
+inside the window and loses nothing. NECMON01 was 479 bp *beginning at position 3*, so two
+real bases fell past the end — that is a mis-trimmed read, not a partial one. The same test
+catches an untrimmed 5′ primer and an over-length amplicon. Unlike a length, or a fixed set
+of shapes, this holds for any read: it is the difference between "shorter than the window"
+and "doesn't fit in the window".
+
+It refuses rather than quietly trimming, because the same 2-base shift is produced both by a
+mis-windowed read (harmless — re-place it) and by an indel near the 5′ end (a sequencing
+error — re-read it), and a program that silently fixed the frame would settle that question
+by itself and hide the second case. **The workbook is never edited either way.**
 
 Two things to read in the output:
 
@@ -751,7 +929,38 @@ done
 git add docs/assets/data/queue.json docs/assets/data/contributors.json \
         docs/assets/data/reserved_names.json
 git commit -m "Refresh submission feeds"
+
+# 5. publish them to the live site (feeds only -- no pages, no styles, no scripts)
+publish/push_feeds.sh --dry-run
+publish/push_feeds.sh
 ```
+
+> **Steps 3 and 5 usually run themselves.** `enroll.py`, `fetch_verdicts.py`,
+> `promote.py` and `close_submission.py` each call
+> `malavi_curation.public_feeds.refresh()` when they have actually changed something, so
+> the public queue follows a curator's decision without anyone remembering to rebuild it.
+> The block above is the manual path, for when you have changed something they did not —
+> a new fetch, an edited exclusion list — or when an automatic publish reported a failure.
+>
+> Three things make that automatic publish safe to leave on:
+>
+> * it runs `push_feeds.sh`, **not** `push_site.sh`. That script can only ever move the
+>   three generated JSON files. A verdict recorded while `docs/` holds a half-edited page
+>   cannot put that page on the public web;
+> * it **never fails the run that called it**. The ledger write has already happened and
+>   is the record. A dead network prints a note telling you to run `push_feeds.sh`, and
+>   the verdict stays recorded;
+> * it does nothing on a `--dry-run`. Pass `--no-publish` to any of the four to skip it
+>   on a real run as well.
+>
+> **An approval publishes no visible change on the day it is made.** The queue applies the
+> same rule as `notify_submitters.py`: an approval is not public until its 24-hour publish
+> hold has elapsed, because a queue that said "Accepted" immediately would have to walk it
+> back in front of the submitter when a late hold landed. So the normal output of an
+> automatic publish right after an approval is *"the published queue was already current"*.
+> It flips a day later, on whichever run happens next — which in practice is the
+> `notify_submitters.py` run you make after the hold. See
+> `build_site_feeds.public_review_state`.
 
 Exit codes from the screen: **2** means findings to review, **3** means a paper with no
 template. Neither is a failure. Anything else means the screen itself did not run.
@@ -913,8 +1122,14 @@ that ships belongs in `malaviR/data-raw/`.
 ### 8a. Correct records MalAvi already holds ✅ (built 2026-08-11)
 
 For faults in data MalAvi has **already published** — a longitude with the wrong sign, a
-misspelled vector method. Not for a curator fixing a submitter's rows before ingest; that
-is `apply_corrections.py`.
+misspelled vector method.
+
+**It is also how a curator's correction to a submission finally reaches the data.** This
+line used to say otherwise ("not for a curator fixing a submitter's rows before ingest;
+that is `apply_corrections.py`"), which was wrong in a way that lost corrections silently:
+`apply_corrections.py` records the authority for a change and edits nothing. Either the
+submitter sends a corrected workbook, or the fix is made here after the submission is
+ingested. See §3da.
 
 **A published edition is never edited.** This changes the store, which is the *next*
 edition, and the change then appears in that edition's report under **Records corrected**

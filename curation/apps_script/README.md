@@ -48,6 +48,20 @@ response row by column name.
 A form left obviously unfinished is better than one that looks complete and silently
 collects submissions with no files attached.
 
+## The verdict sheet has to be shared with the fetcher
+
+Settled 2026-08-14, after `fetch_verdicts.py` turned out never to have read it over the
+network. Share the responses sheet **Viewer** with the service account —
+`fetch_verdicts.py` prints the exact address when Drive refuses it — and leave General
+access on **Restricted**.
+
+Never "anyone with the link". This sheet is not the submissions sheet: verdict reason text
+quotes what was wrong with somebody's unpublished data, and curator names sit next to it.
+
+The failure mode to recognize: Drive answers **404**, not 403, because a file you have no
+access to is invisible rather than forbidden. It reads like a wrong sheet id, and the id is
+usually fine.
+
 ## The one thing the script cannot be trusted to do
 
 Apps Script's control over **verified** email collection has changed more than once and

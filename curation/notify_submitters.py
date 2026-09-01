@@ -54,10 +54,11 @@ from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from datetime import datetime, timedelta, timezone                     # noqa: E402
+from datetime import datetime                                          # noqa: E402
 
 from malavi_curation import form_metadata                              # noqa: E402
 from malavi_curation import ledger                                     # noqa: E402
+from malavi_curation import public_feeds                               # noqa: E402
 from malavi_curation.config import load_config, repo_root              # noqa: E402
 from malavi_curation.submission_id import (                            # noqa: E402
     directory_for, is_opaque,
@@ -115,32 +116,17 @@ def settled(entry, config: Dict, now: Optional[datetime] = None) -> Tuple[bool, 
     if entry.state == "approved" and ledger.blocking_holds(entry):
         return False, "a blocking verdict stands"
 
+    # Which timestamp the wait is measured from is this program's decision -- an approval
+    # has a field for it, a decline is read out of the history. The arithmetic itself, and
+    # the two failure behaviors that go with it (a validated hold that refuses zero, and an
+    # unreadable timestamp failing one submission rather than the whole run), live in
+    # ledger.hold_elapsed so that this program and the public queue cannot drift apart on
+    # what "the hold has elapsed" means.
     stamp = entry.approved_at if entry.state == "approved" else _closed_at(entry)
     if not stamp:
         return False, f"{entry.state} but carries no timestamp for when that happened"
 
-    # Read the hold through the ledger's own validator rather than off the dict. It
-    # coerces to int and refuses zero or negative -- "zero would silently disable the
-    # protection the value exists to provide". Reading the key directly meant a
-    # publish_hold_hours of 0 left transition() correctly refusing a release while this
-    # program mailed the submitter immediately, which is the exact window the design says
-    # must never be skipped. A quoted "24" in YAML raised TypeError and killed the run.
-    hours = ledger._review_config(config)["publish_hold_hours"]
-
-    # A timestamp that cannot be read must fail this one submission, not the run. The same
-    # bug was fixed in ledger.due_actions for the same reason: "one bad value used to stop
-    # every clock for every submission in the ledger until somebody noticed".
-    try:
-        moment = now or datetime.now(timezone.utc)
-        waited = moment - ledger._parse(stamp)
-    except (ValueError, TypeError) as exc:
-        return False, f"unreadable timestamp {stamp!r} ({exc})"
-
-    if waited < timedelta(hours=hours):
-        remaining = timedelta(hours=hours) - waited
-        return False, f"hold has {remaining} left to run"
-
-    return True, ""
+    return ledger.hold_elapsed(stamp, config, now)
 
 
 def _closed_at(entry) -> str:
@@ -236,6 +222,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                              "send nothing and record nothing")
     parser.add_argument("--check", action="store_true",
                         help="report whether delivery is configured, and stop")
+    parser.add_argument("--no-publish", action="store_true",
+                        help="do not rebuild and publish the public queue afterwards")
     arguments = parser.parse_args(argv)
 
     print("== malavi_rebuild :: notify submitters ==")
@@ -352,6 +340,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     print(f"\nnotified {sent} submitter(s); {skipped} not due.")
+
+    # This program is the one that runs *after* a publish hold has elapsed, which makes it
+    # the moment the public queue is finally allowed to say "Accepted" -- see
+    # build_site_feeds.public_review_state. No state changed here, so nothing else would
+    # trigger the rebuild; without this the flip would wait for whatever ran next.
+    #
+    # Unconditional rather than gated on `sent`, because the queue can be due to flip even
+    # when nobody was written to: a submission already told, or one that claims no names.
+    if not arguments.dry_run and not arguments.no_publish:
+        print("")
+        public_feeds.refresh()
+
     if failed:
         # The ledger was saved on the way out, so the ones that DID go are recorded and
         # will not be repeated. Say plainly that the run was partial.

@@ -166,7 +166,13 @@ class TestAlignment:
         assert label == "L_ACCFRA01_Leucocytozoon_toddi"
 
     def test_an_unassigned_genus_contributes_no_slash(self):
-        """GENUS_NAME is literally "N/A" on 7 lineages, and a / in a FASTA id is trouble."""
+        """A / in a FASTA id is trouble.
+
+        GENUS_NAME was literally "N/A" on 7 Accipitridae lineages until 2026-08-20, when
+        COR-000031 set them to Haemoproteus (Harl et al. 2024). No row carries "N/A" now,
+        so this guards the handling rather than a value currently in the store -- which is
+        the point: the next unrecognized genus must not acquire a slash either.
+        """
         label = fasta_label(_lineage("ACCNIS06", genus="N/A",
                                      species="Haemoproteus nisi"))
         assert label == "ACCNIS06_Haemoproteus_nisi"

@@ -66,6 +66,15 @@
 // editing both, and a curator removed from the registry but left here keeps receiving
 // submissions they can no longer vote on.
 // ---------------------------------------------------------------------------------------
+// THE LIVE LIST IS LONGER THAN THIS ONE, DELIBERATELY, for the same reason as in
+// publish_report.gs: this file is published, and a curator's personal address must not be.
+// config/curators.yml is the record; add the address to the live copy of this array in the
+// Apps Script editor and leave this one as it is.
+//
+// This array is also the thing that decides who gets email. Someone in
+// config/curators.yml but not here is a curator whose verdicts count and who is never told
+// a submission arrived — which is the right arrangement for someone who has agreed to
+// help but has not been told about it yet.
 var CURATORS = [
   'vaellis@udel.edu'
 ];
@@ -197,13 +206,20 @@ function notifyCurators(a) {
     lines.push('');
   }
 
-  lines.push('The automated checks have NOT run yet. This email only says a submission');
-  lines.push('arrived; it does not say whether the names or sequences are new, and there');
-  lines.push('is nothing to decide yet.');
+  // "Automated" was the wrong word here and a curator read it the way anyone would:
+  // as "a machine is about to do this", and then waited. The checks are automated in
+  // the sense of being rule-based, not in the sense of being scheduled -- nothing runs
+  // them but the maintainer at a terminal. Say that plainly, or the silence between the
+  // two emails looks like a system working rather than a person who has not got to it.
+  lines.push('The checks have not run yet. This email only says a submission arrived; it');
+  lines.push('does not say whether the names or sequences are new, and there is nothing');
+  lines.push('to decide yet.');
   lines.push('');
-  lines.push('A second email follows with the curator report, once the checks have run.');
-  lines.push('That one carries the decision link, prefilled for this submission. If it');
-  lines.push('never arrives, the screening job has not run -- tell the maintainer.');
+  lines.push('The maintainer also received this email and will run the report checking');
+  lines.push('software and that will trigger a second email to you and the other curators');
+  lines.push('with the "curator report". The curator report in that second email has the');
+  lines.push('link for recording your decision. If you don\'t receive the follow-up email');
+  lines.push('with the curator report within a few days, please let the maintainer know.');
   lines.push('');
   lines.push('--');
   lines.push('Confidential. A submission may contain unpublished sequences. Please do not');

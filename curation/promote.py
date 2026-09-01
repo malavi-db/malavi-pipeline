@@ -18,10 +18,12 @@
 This program applies exactly one kind of them:
 
 * ``timeout_dormant`` — a submission has sat waiting on its submitter past the configured
-  timeout. It goes ``dormant`` and its reserved lineage names go back. This is applied
-  automatically because nobody disagrees with a clock: the submitter was asked, the time
-  elapsed, and holding a name for work that will never arrive is the harm the timeout
-  exists to prevent.
+  timeout. It goes ``dormant``; **its reserved lineage names are kept**. This is applied
+  automatically because nobody disagrees with a clock: the submitter was asked and the time
+  elapsed. What the clock records is that we have stopped expecting an answer soon, not that
+  the submitter has forfeited anything — very often they are away resequencing because a
+  curator asked them to. Returning a name is a decision somebody makes, by declining the
+  submission; see :func:`ledger.transition`.
 
 It deliberately does **not** apply ``release_eligible``. That proposal means the publish
 hold has elapsed with no standing objection, so the submission *may* go into a release —
@@ -53,7 +55,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
-from malavi_curation import ledger  # noqa: E402
+from malavi_curation import ledger, public_feeds  # noqa: E402
 from malavi_curation.config import load_config, repo_root  # noqa: E402
 
 # Where the committable record goes. Under data/ rather than the intake tree precisely
@@ -94,6 +96,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--now", default=None,
                         help="evaluate the clocks at this ISO 8601 UTC moment instead of "
                              "now, for testing")
+    parser.add_argument("--no-publish", action="store_true",
+                        help="do not rebuild and publish the public queue afterwards")
     parser.add_argument("--stale-days", type=int, default=None,
                         help="override review.stale_review_days from config")
     arguments = parser.parse_args(argv)
@@ -149,8 +153,25 @@ def main(argv: Optional[List[str]] = None) -> int:
                     continue
                 applied += 1
                 print(f"  [dormant  ] {proposal.submission_id}  {proposal.because}")
-                print(f"               reserved names released: "
+                # Printed as KEPT rather than released so an operator watching this run
+                # cannot come away with the old mental model, in which day 60 was the
+                # moment a name became available again.
+                print(f"               reserved names KEPT ({entry.name_state}): "
                       f"{', '.join(ledger.agreed_names(entry)) or 'none'}")
+
+            elif proposal.action == "approve":
+                try:
+                    # Same reasoning as the dormant branch: transition() re-checks at the
+                    # write, so a fresh objection recorded between the scan and here makes
+                    # this refuse rather than approve over the top of it.
+                    ledger.transition(entry, "approved", actor="promoter", at=moment,
+                                      reason="objection_resolved", config=config)
+                except ledger.LedgerError as exc:
+                    print(f"  [refused  ] {proposal.submission_id}  {exc}")
+                    continue
+                applied += 1
+                print(f"  [approved ] {proposal.submission_id}  {proposal.because}")
+                print(f"               the publish hold starts now")
 
             elif proposal.action == "release_eligible":
                 # Reported, never applied. See this module's docstring.
@@ -183,6 +204,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if arguments.dry_run:
         print("[dry-run] nothing was written.")
         return 0
+
+    # A promotion changes what the public queue should say -- most often by dropping a
+    # released submission off it. Brought up to date here so the site never lags a
+    # decision; never allowed to fail the run, since the ledger is already written.
+    if applied and not arguments.no_publish:
+        print("")
+        public_feeds.refresh()
 
     # Exit 2 means "a person should look at this" -- a malformed timestamp, or a submission
     # that has been sitting untouched. Same convention as check_template.py and

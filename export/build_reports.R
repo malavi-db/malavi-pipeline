@@ -85,6 +85,19 @@ synonymy_csv <- syn$synonymies
 # Sort by group, then by name within the group, so the file is stable and a
 # reader can see each haplotype's members together.
 synonymy_csv <- synonymy_csv[order(synonymy_csv$haplotype, synonymy_csv$lineage), ]
+
+# Drop `status` ("kept" / "dropped") from the PUBLISHED copy only.
+#
+# In malaviR the column is advice for de-duplicating an analysis: clean_alignment()
+# keeps one representative per haplotype group, and `status` records which one it
+# would keep. On a public download that reads as though MalAvi had removed the
+# "dropped" lineages from the database. It has not, and nothing here ever does.
+#
+# The column stays in malaviR, where it means what it says and where a function
+# depends on it. This removes it from the file the website hands out; `syn` itself
+# is untouched, so the QC report below still resolves synonymy-group membership.
+synonymy_csv$status <- NULL
+
 meta_syn <- write_report(synonymy_csv, "synonymy")
 
 cat(sprintf("     %d names across %d haplotype groups (%.1f%% name inflation)\n",

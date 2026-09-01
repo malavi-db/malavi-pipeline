@@ -236,8 +236,10 @@ def fasta_label(lineage: Dict[str, Any]) -> str:
     at the first whitespace, so 238 of the 5,368 records in every release shipped an id
     that silently lost everything after the genus -- and two ``TUPHI01`` rows then
     truncated to the *same* id without the build's duplicate-label check noticing, because
-    it compares full labels. The seven ``GENUS_NAME = "N/A"`` lineages also contributed a
-    ``/``. Both classes of character are gone now that the binomial is used directly.
+    it compares full labels. Seven ``GENUS_NAME = "N/A"`` lineages also contributed a
+    ``/``. Both classes of character are gone now that the binomial is used directly. (Those
+    seven were corrected to ``Haemoproteus`` on 2026-08-20 by COR-000031, so no row carries
+    ``"N/A"`` today; the handling above still stands for the next unrecognized genus.)
 
     Whitespace inside the binomial becomes ``_`` rather than being stripped, so the label
     stays reversible: ``Leucocytozoon_toddi`` is still readable as two words.

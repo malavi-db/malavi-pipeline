@@ -94,6 +94,29 @@ p { margin:0 0 12px; max-width:var(--measure); color:var(--ink-2); }
   color:var(--ink-3); margin:0 0 10px; }
 .lead { font-size:17.5px; }
 .sub { color:var(--ink-3); font-size:13.5px; margin:0 0 20px; }
+/* Definition lists that state a vocabulary the page then uses: the triage tiers and
+   the sequence QC calls. Kept narrow so a definition reads as a caption, not a table. */
+/* A cell stating something the curator has to resolve before the row can be accepted --
+   currently an alternative name pointing at a lineage MalAvi does not hold. */
+.bad { background:var(--stop-wash); color:var(--stop); font-weight:600; }
+/* The per-window parentage behind a chimera call, printed under the finding it
+   explains rather than in a section of its own. */
+.rowflags { font-size:10px; color:var(--ink-3); line-height:1.25; }
+.chimera { margin:8px 0 2px; font-size:12.5px; color:var(--ink-2); }
+.chimera ul { margin:4px 0 4px 18px; padding:0; }
+.chimera li { margin:1px 0; }
+.chimera .caveat { color:var(--ink-3); font-style:italic; margin:4px 0 0; }
+.alnkey { font-size:12px; color:var(--ink-3); margin:0 0 18px; }
+.alnkey .sw { display:inline-block; min-width:16px; text-align:center; font-weight:700;
+  border-radius:3px; padding:1px 4px; margin:0 5px 0 14px; font-family:var(--mono, monospace); }
+.alnkey .sw:first-child { margin-left:0; }
+.alnkey .sw.k-nonsyn { background:var(--stop-wash); color:var(--stop); }
+.alnkey .sw.k-transversion { background:var(--warn-wash); color:var(--warn); }
+.alnkey .sw.k-transition { background:var(--ok-wash); color:var(--ok); }
+.alnkey .sw.rare { text-decoration:underline; text-decoration-thickness:2px; }
+.tierkey { margin:0 0 18px; font-size:13px; color:var(--ink-2); }
+.tierkey dt { font-weight:600; margin:8px 0 0; }
+.tierkey dd { margin:1px 0 0 0; color:var(--ink-3); }
 
 .card { background:var(--surface); border:1px solid var(--rule);
   border-radius:var(--radius); padding:22px; box-shadow:var(--shadow); }
@@ -107,12 +130,21 @@ p { margin:0 0 12px; max-width:var(--measure); color:var(--ink-2); }
 .appendix-head { margin-top:26px; }
 .taken-name { font-family:var(--mono, monospace); font-weight:700; color:var(--stop); }
 .taken-note { color:var(--stop); font-size:13px; }
-table.matrix { border-collapse:collapse; font-size:11px; }
-table.matrix th, table.matrix td { border:1px solid var(--rule); padding:5px 9px;
-  text-align:center; }
-table.matrix th.rowhead { text-align:left; white-space:nowrap; font-weight:400;
+/* Fixed layout, or the browser hands the host-name column as much width as its longest
+   binomial wants and the lineage columns run off the right edge of the paper -- which is
+   invisible in HTML, because it scrolls, and lost in the PDF, which does not. The row
+   header is capped and allowed to wrap for the same reason. */
+table.matrix { border-collapse:collapse; font-size:10px; table-layout:fixed;
+  width:100%; }
+table.matrix th, table.matrix td { border:1px solid var(--rule); padding:4px 2px;
+  text-align:center; overflow-wrap:anywhere; }
+/* break-word, not anywhere: a binomial should wrap at the space between genus and
+   species, and only split a word when it genuinely cannot fit. "Aix galericula / ta" is
+   what anywhere gives you. */
+table.matrix th.rowhead { text-align:left; white-space:normal; font-weight:400;
   background:var(--surface-2); text-transform:none; letter-spacing:0;
-  font-size:11.5px; }
+  font-size:10.5px; width:30%; overflow-wrap:break-word; }
+table.matrix th.mono { font-size:9px; letter-spacing:0; }
 table.matrix td.hit { font-weight:700; background:var(--ok-wash); }
 table.matrix td.miss { color:var(--ink-3); }
 h2.display { margin-top:34px; }
@@ -271,6 +303,15 @@ table.aln td.b.query { background:var(--accent-wash); color:var(--ink); font-wei
 table.aln td.b.diff { background:var(--warn-wash); color:var(--warn); font-weight:700; }
 table.aln td.b.same { color:var(--ink-3); }
 table.aln td.b.nodata { color:var(--rule); }
+/* What each difference does, shaded on the submitted row. Three mutually exclusive kinds
+   plus a rare-base marker, which is an underline rather than a fourth colour so it can
+   sit on top of any of them. These must come after td.b.query: they carry the same
+   specificity as it does, so order is what decides, and defining them further up the
+   sheet is how they silently did nothing the first time. */
+table.aln td.b.k-nonsyn { background:var(--stop-wash); color:var(--stop); font-weight:700; }
+table.aln td.b.k-transversion { background:var(--warn-wash); color:var(--warn); font-weight:700; }
+table.aln td.b.k-transition { background:var(--ok-wash); color:var(--ok); font-weight:700; }
+table.aln td.b.rare { text-decoration:underline; text-decoration-thickness:2px; }
 
 footer { margin-top:56px; padding-top:18px; border-top:1px solid var(--rule);
   color:var(--ink-3); font-size:12.5px; max-width:var(--measure); }
@@ -890,6 +931,81 @@ FINDING_HEADLINES = {
 
 ALLOWED_URL_HOSTS = ("docs.google.com", "drive.google.com")
 
+# How often the chimera screen fires on a sequence that is certainly not a chimera.
+#
+# Measured 2026-08-20 by leave-one-out over 250 curated lineages (the ones that are a
+# clean 479 bp of ACGT -- 2,027 of the release's 5,365): remove each from the reference
+# and screen it as though it had just been submitted. 58 of 250 came back
+# "possible_chimera", none of which is one.
+#
+# The two conditions are not equal partners. `parent_switches >= 2` was met by 246 of the
+# 250 (median 8, max 16), so it separates almost nothing: among lineages a base or two
+# apart -- the median distance to the nearest relative is 1 bp -- which one wins a 120 bp
+# window is close to arbitrary. `chimera_delta >= 3` was met by exactly the 58 that were
+# flagged, so the call is that term alone. And that term reduces to "the nearest single
+# relative is >= 3 bp away while windows match better", which is a novelty measure --
+# and novelty is what a submission is full of.
+#
+# The number is printed beside every chimera call, because a curator cannot weigh the
+# call without it. Re-measure with curation/r (leave-one-out over the release) if the
+# thresholds in malaviR's .qc_settings change.
+CHIMERA_FALSE_POSITIVE_RATE = "23% (58 of 250 tested)"
+
+# malaviR's lineage_qc calls, as its final-call chain assigns them (R/lineage_qc.R):
+# a stop codon in frame wins outright, then an exact match, then a chimera flag, and
+# only then the plausibility score, banded at 0.85 / 0.60 / 0.35.
+#
+# Each call gets its own words and its own gloss. Two of them used to share a phrase,
+# which meant a chimera and a low score were indistinguishable on the page, and the
+# ladder had no stated order so "review" and "Worth a close look" looked unrelated.
+# If the thresholds in malaviR change, the score bands quoted here must change with them.
+QC_CALLS: Dict[str, tuple] = {
+    "invalid_or_strong_warning": (
+        "Invalid — stop codon in reading frame",
+        "The sequence translates with a stop codon. Usually the sequence was pasted "
+        "outside the 479 bp window rather than anything wrong with the parasite — check "
+        "the framing before reading anything else here."),
+    "known_lineage": (
+        "Already in MalAvi",
+        "Identical to a lineage MalAvi already holds, over every position both cover."),
+    "possible_chimera": (
+        "Possible chimera",
+        "Different stretches of the barcode have different closest relatives. A 120 bp "
+        "window is slid along the sequence and asked which lineage it matches best; when "
+        "that answer keeps changing, the sequence looks like a mosaic of two or more "
+        "templates rather than one parasite. Not a score — this call is made on that "
+        "pattern alone, and the stretches are listed under the call. Read it as a prompt "
+        "to look rather than as a finding: tested by removing curated lineages from the "
+        "reference and re-screening them, " + CHIMERA_FALSE_POSITIVE_RATE + " of "
+        "sequences that are certainly not chimeras are called one."),
+    "plausible_new_lineage": (
+        "Plausible new lineage",
+        "Score of 0.85 or better: nothing about the sequence itself looks wrong."),
+    "review": (
+        "Worth a look",
+        "Score between 0.60 and 0.85. Something is mildly unusual — the notes beneath "
+        "the alignment say what."),
+    "strong_warning": (
+        "Worth a close look",
+        "Score between 0.35 and 0.60. Several unusual features at once."),
+    "possible_error": (
+        "Probably an error",
+        "Score below 0.35. More likely a sequencing or transcription problem than a "
+        "real parasite."),
+}
+
+
+def _qc_call_key(calls_present: Sequence[str]) -> str:
+    """The key for whichever QC calls this submission actually produced."""
+    seen = [c for c in QC_CALLS if c in set(calls_present)]
+    if not seen:
+        return ""
+    items = "".join(f"<dt>{esc(QC_CALLS[c][0])}</dt><dd>{esc(QC_CALLS[c][1])}</dd>"
+                    for c in seen)
+    return ('<p class="sub">Each sequence carries one call from malaviR\'s quality '
+            'screen. The ones in this submission mean:</p>'
+            f'<dl class="tierkey">{items}</dl>')
+
 
 def _safe_url(url: str) -> Optional[str]:
     """A URL fit to put in an href, or None.
@@ -934,13 +1050,33 @@ def _humanize(message: str) -> str:
         "rare bases at sites": "bases that are rare at those positions",
         "second codon position changes": "changes at second codon positions",
         "nonsynonymous changes": "amino-acid-changing differences",
-        "strong warning": "Worth a close look",
-        "possible chimera": "Worth a close look",
-        "warning": "Worth a look",
     }
-    text = str(message or "").replace("_", " ")
+    # Identifiers must survive the underscore strip below. malaviR's messages name its
+    # own functions -- "see frame_to_malavi" -- and blanket-replacing underscores turned
+    # that into "see frame to malavi", which reads as three words of broken English
+    # rather than as something a reader can go and look up.
+    text = str(message or "")
+    for identifier in ("frame_to_malavi", "blast_malavi", "lineage_qc", "lineage_screen",
+                       "match_taxonomy", "clean_alignment", "extract_alignment"):
+        text = text.replace(identifier, "\x00" + identifier + "\x00")
+    parts = text.split("\x00")
+    text = "".join(part if index % 2 else part.replace("_", " ")
+                   for index, part in enumerate(parts))
+    text = text.replace("\x00", "")
     for code, plain in swaps.items():
         text = text.replace(code, plain)
+
+    # The QC call is the FIRST token of the message and is translated only there.
+    # Translating it wherever it appeared would rewrite ordinary prose -- "review"
+    # occurs in "a curator's review" -- and that is a rename of somebody's words, not
+    # a glossary. Until 2026-08-19 "strong_warning" and "possible_chimera" both became
+    # "Worth a close look", losing the one thing a chimera call says, and "review" was
+    # left as a raw token beside them, so nothing indicated which was worse.
+    for token in sorted(QC_CALLS, key=len, reverse=True):
+        spaced = token.replace("_", " ")
+        if text.startswith(spaced):
+            text = QC_CALLS[token][0] + text[len(spaced):]
+            break
     return text
 
 
@@ -1090,6 +1226,16 @@ def _checks_section(run: CheckRun, workbook: Optional[str] = None,
         if group != current_group:
             current_group = group
             bits.append(f'<h3 class="group">{esc(group)}</h3>')
+            # The Sequences group leads with every QC call it is about to use. The calls
+            # are a ladder and nothing on the page said so, so a curator meeting "Worth a
+            # look" and "Worth a close look" had no way to rank them.
+            if group == "Sequences":
+                calls = [str((f.evidence or {}).get("call") or "")
+                         for r in ordered if r.check_id == "sequence_qc"
+                         for f in r.findings]
+                key = _qc_call_key([c for c in calls if c])
+                if key:
+                    bits.append(key)
             # What came through clean in this group, named. "Proposed names are available"
             # helps nobody; "Proposed name (TUMIG31) is available" tells a curator which
             # one they can stop thinking about.
@@ -1131,7 +1277,9 @@ def _checks_section(run: CheckRun, workbook: Optional[str] = None,
                 items += (
                     f'<li><span class="subj">{esc(subject)}</span> '
                     + (f'<span class="where">— {esc(where)}</span>' if where else "")
-                    + f'<br>{message}{link}</li>')
+                    + f'<br>{message}{link}'
+                    + _chimera_evidence(f.evidence)
+                    + '</li>')
             body += f'<ul class="finds">{items}</ul>'
 
         bits.append(f'<div class="{classes}"><div class="hd">{head}</div>{body}</div>')
@@ -1261,7 +1409,19 @@ def _alignment_section(figures: Optional[Sequence[Any]]) -> str:
     if not figures:
         return ""
 
-    out = ['<h2 class="display">Alignment with the nearest lineages</h2>']
+    out = ['<h2 class="display">Alignment with the nearest lineages</h2>',
+           '<p class="sub">Only positions where something varies are shown; a dot is '
+           'agreement with the submitted sequence. The submitted row is shaded by what '
+           'each difference does, measured against the nearest lineage — the same '
+           'quantities the quality screen reports as counts, put where they can be '
+           'pointed at.</p>',
+           '<div class="alnkey">'
+           '<span class="sw k-nonsyn">A</span> changes the amino acid'
+           '<span class="sw k-transversion">A</span> transversion, silent'
+           '<span class="sw k-transition">A</span> transition, silent'
+           '<span class="sw rare">A</span> base rare at this site '
+           '(carried by 1% or less of the lineages across the whole release, all three genera, that cover it)'
+           '</div>']
 
     for figure in figures:
         data = figure.as_dict() if hasattr(figure, "as_dict") else figure
@@ -1272,6 +1432,12 @@ def _alignment_section(figures: Optional[Sequence[Any]]) -> str:
         if data.get("unavailable"):
             out.append(f'<div class="banner">{esc(data["unavailable"])}</div>')
             continue
+        # Which arrangement of the bases this picture is of. Printed before the table,
+        # because a reader who works that out afterwards has already misread it.
+        if data.get("framing"):
+            klass = "banner" if data.get("offset") else "note"
+            out.append(f'<div class="{klass}">{esc(data["framing"])}</div>')
+
         if not data.get("positions"):
             out.append('<div class="note">Identical to the lineages shown at every '
                        'position they both cover.</div>')
@@ -1280,13 +1446,36 @@ def _alignment_section(figures: Optional[Sequence[Any]]) -> str:
         # Position numbers sit horizontally above their column. That widens each
         # column to roughly three digits, which is the reason MAX_COLUMNS is what it is.
         header = "".join(f'<th class="pos">{p}</th>' for p in data["positions"])
+        columns = data.get("columns") or []
         rows = []
         for row in data["rows"]:
-            cells = "".join(
-                f'<td class="b {c["state"]}">'
-                + ("." if c["state"] == "same" else esc(c["base"]))
-                + "</td>"
-                for c in row["cells"])
+            cells_out = []
+            for index, c in enumerate(row["cells"]):
+                classes = ["b", c["state"]]
+                title = ""
+                # The submitted row carries the interpretation; the neighbours stay plain
+                # so the eye has one thing to read per column rather than six.
+                if row["is_query"] and index < len(columns):
+                    column = columns[index]
+                    if column.get("kind") in ("nonsynonymous", "transversion",
+                                              "transition"):
+                        classes.append("k-" + ("nonsyn" if column["kind"] ==
+                                               "nonsynonymous" else column["kind"]))
+                    if column.get("rare"):
+                        classes.append("rare")
+                    bits = [f"position {column['position']}",
+                            f"codon position {column['codon_position']}"]
+                    if column.get("amino_acid"):
+                        bits.append(f"amino acid {column['amino_acid']}")
+                    if column.get("share") is not None:
+                        bits.append(f"this base at {column['share'] * 100:.1f}% "
+                                    f"of covering lineages")
+                    title = f' title="{esc("; ".join(bits))}"'
+                cells_out.append(
+                    f'<td class="{" ".join(classes)}"{title}>'
+                    + ("." if c["state"] == "same" else esc(c["base"]))
+                    + "</td>")
+            cells = "".join(cells_out)
             distance = ("" if row["is_query"] else
                         f'<span class="dist">{row["distance"]} of {row["comparable"]}</span>')
             name_class = "seqname query" if row["is_query"] else "seqname"
@@ -1297,15 +1486,18 @@ def _alignment_section(figures: Optional[Sequence[Any]]) -> str:
                    f'<tr><th class="seqname"></th>{header}</tr>{"".join(rows)}'
                    '</table></div>')
 
+        # The caption used to be a count of differing positions, which the table above
+        # already showed. What it says now is what the differences are -- which change
+        # the protein, which are transversions, which bases are rare where they sit, and
+        # whether they bunch into one stretch, the pattern a chimera leaves.
+        caption = []
         if data.get("truncated"):
-            out.append(f'<p class="sub">Showing the first {len(data["positions"])} of '
-                       f'{data["n_differing"]} differing positions. A sequence this '
-                       f'divergent from everything in the release is itself worth a '
-                       f'second look.</p>')
-        else:
-            out.append(f'<p class="sub">{data["n_differing"]} differing '
-                       f'position{"" if data["n_differing"] == 1 else "s"} across these '
-                       f'{len(data["rows"])} sequences.</p>')
+            caption.append(f'Showing the first {len(data["positions"])} of '
+                           f'{data["n_differing"]} differing positions; the notes below '
+                           f'describe all of them.')
+        caption.extend(data.get("notes") or [])
+        if caption:
+            out.append('<p class="sub">' + " ".join(esc(s) for s in caption) + '</p>')
     return "\n".join(out)
 
 
@@ -1354,6 +1546,107 @@ def _normalization_section(submission: Dict[str, Any]) -> str:
                    + "".join(f"<li>{esc(note)}</li>" for note in repairs)
                    + "</ul>")
     return "\n".join(out)
+
+
+def _chimera_evidence(evidence: Optional[Dict[str, Any]]) -> str:
+    """Which stretch of the barcode matches which lineage, under a chimera call.
+
+    A "possible chimera" verdict is otherwise an assertion with nothing behind it. What
+    malaviR actually did is slide a 120 bp window along the sequence and record the
+    nearest lineage in each; the call fires when that answer keeps changing. Printing the
+    runs turns the verdict into something a curator can agree or disagree with.
+
+    The caveat is printed with them, because it is the usual explanation: among lineages
+    that are themselves a base or two apart, which one wins a short window is close to
+    arbitrary, and switching between near-identical relatives is much weaker evidence
+    than switching between distant ones.
+    """
+    if not evidence or (evidence.get("call") != "possible_chimera"):
+        return ""
+    runs = evidence.get("chimera_runs") or []
+    if not runs:
+        return ""
+
+    parts = "".join(
+        f'<li><span class="mono">{esc(r.get("lineage"))}</span> — positions '
+        f'{esc(_number(r.get("start")))} to {esc(_number(r.get("end")))}'
+        + (f', matching exactly' if (r.get("distance") == 0)
+           else f', {esc(_number(r.get("distance")))} bp away')
+        + '</li>'
+        for r in runs)
+
+    switches = evidence.get("chimera_parent_switches")
+    best = evidence.get("chimera_best_single")
+    best_distance = evidence.get("chimera_best_single_distance")
+    lead = (f'The nearest lineage changes {esc(_number(switches))} time(s) along the '
+            f'barcode. No single lineage is nearest throughout'
+            + (f'; the best over the whole sequence is '
+               f'<span class="mono">{esc(best)}</span> at '
+               f'{esc(_number(best_distance))} bp' if best else "")
+            + ':')
+    return ('<div class="chimera"><p>' + lead + '</p>'
+            f'<ul>{parts}</ul>'
+            '<p class="caveat">Weigh this against its base rate. Curated MalAvi '
+            'lineages removed from the reference and re-screened as though newly '
+            'submitted are called possible chimeras ' + CHIMERA_FALSE_POSITIVE_RATE
+            + ' of the time. The switching on its own means almost nothing -- 98% of '
+            'those lineages switched parents twice or more (median 8): among lineages that '
+            'differ by a base or two, which wins a 120 bp window is close to arbitrary. '
+            'What is worth weighing is whether the stretches above point at '
+            '<i>distant</i> relatives, and whether the run boundaries fall in the same '
+            'place.</p></div>')
+
+
+def _alt_names_section(submission: Dict[str, Any]) -> str:
+    """Lineages MalAvi already holds that the submitter published under another name.
+
+    This is the Alt_Lineage_names sheet, and it is a claim about MalAvi's existing data
+    rather than about the submission: "the lineage you call SGS1 is the one I published
+    as P15". It needs a curator's eye more than most rows do, because accepting it makes
+    two names one lineage for everyone, and it is not recoverable by re-reading the
+    submission later.
+
+    Whether MalAvi actually holds the named lineage is stated, because the commonest
+    error here is a submitter naming a lineage that does not exist -- a typo, or a name
+    from a paper that MalAvi indexes differently.
+    """
+    rows = submission.get("alternative_names") or []
+    if not rows:
+        return ""
+
+    try:
+        from .release_index import load_release_index
+        known = {str(n).strip().upper() for n in (load_release_index().lineages or ())}
+    except Exception:                                          # noqa: BLE001
+        known = set()
+
+    body = ""
+    for entry in rows:
+        malavi = str(entry.get("malavi_name") or "")
+        alt = str(entry.get("alternative_name") or "")
+        accessions = ", ".join(entry.get("accessions") or [])
+        if not known:
+            status = '<td class="miss">not checked</td>'
+        elif malavi.strip().upper() in known:
+            status = '<td class="hit">in MalAvi</td>'
+        else:
+            status = ('<td class="bad"><b>no such lineage in MalAvi</b></td>')
+        body += (f"<tr><td class='mono'>{esc(malavi)}</td>"
+                 f"<td class='mono'>{esc(alt)}</td>"
+                 f"<td class='mono'>{esc(accessions)}</td>{status}"
+                 f"<td class='rowno'>{esc((entry.get('source') or {}).get('row'))}</td>"
+                 "</tr>")
+
+    return ('<h2 class="display">Names for lineages already in MalAvi</h2>'
+            '<p class="sub">The submitter says each lineage on the left, which MalAvi '
+            'already holds, was published under the name on the right. Accepting these '
+            'makes the two names one lineage for every future reader, so they are worth '
+            'more attention than a row count suggests — and they are not proposals for '
+            'new lineages, which are listed separately above.</p>'
+            '<div class="tablewrap"><table><thead><tr>'
+            '<th>MalAvi name</th><th>Published as</th><th>Accessions</th>'
+            '<th>Status</th><th>Row</th></tr></thead>'
+            f'<tbody>{body}</tbody></table></div>')
 
 
 def _submitted_files(metadata: Optional[Dict[str, Any]]) -> str:
@@ -1434,19 +1727,30 @@ def _matrix_section(submission: Dict[str, Any]) -> str:
                         f"{_number(tested) if tested is not None else '?'}"
             cells[(host, lineage)] = value
 
-        header = "".join(f"<th class='mono'>{esc(l)}</th>" for l in lineages)
-        body = ""
-        for host in hosts:
-            tds = ""
-            for lineage in lineages:
-                value = cells.get((host, lineage))
-                tds += (f"<td class='hit'>{value}</td>" if value
-                        else "<td class='miss'>&middot;</td>")
-            body += f"<tr><th class='rowhead'><i>{esc(host)}</i></th>{tds}</tr>"
-
         out.append(f'<h3 class="place">{esc(place)}</h3>')
-        out.append(f'<div class="tablewrap"><table class="matrix">'
-                   f'<tr><th></th>{header}</tr>{body}</table></div>')
+
+        # A page fits about this many lineage columns beside the host names. A study of
+        # 39 lineages ran off the right edge of the paper, silently -- the HTML scrolls,
+        # the PDF just loses the columns. So the matrix is split into blocks that fit,
+        # each repeating the host rows, rather than being shrunk until it is unreadable.
+        per_block = 10
+        blocks = [lineages[i:i + per_block] for i in range(0, len(lineages), per_block)]
+        for number, block in enumerate(blocks, start=1):
+            header = "".join(f"<th class='mono'>{esc(l)}</th>" for l in block)
+            body = ""
+            for host in hosts:
+                tds = ""
+                for lineage in block:
+                    value = cells.get((host, lineage))
+                    tds += (f"<td class='hit'>{value}</td>" if value
+                            else "<td class='miss'>&middot;</td>")
+                body += f"<tr><th class='rowhead'><i>{esc(host)}</i></th>{tds}</tr>"
+            if len(blocks) > 1:
+                out.append(f'<div class="note">Lineages {esc(block[0])}–'
+                           f'{esc(block[-1])} — part {number} of {len(blocks)}; the same '
+                           f'hosts are listed in each part.</div>')
+            out.append(f'<div class="tablewrap"><table class="matrix">'
+                       f'<tr><th></th>{header}</tr>{body}</table></div>')
 
     return "\n".join(out)
 
@@ -1463,10 +1767,25 @@ def _records_section(submission: Dict[str, Any]) -> str:
     from .record_handles import handles as _handles      # noqa: PLC0415 - avoids a cycle
     handle_for = {(entry.kind, entry.index): entry.handle for entry in _handles(submission)}
 
+    # The tier vocabulary is defined here rather than left to be inferred. The words are
+    # taken from row_flags.TIERS, which is what assigns them, so the definition on the
+    # page cannot drift from the rule that produced it. Only the tiers actually present
+    # are defined: explaining a tier no row is in is noise in a document already long.
+    from .row_flags import TIERS                      # noqa: PLC0415 - avoids a cycle
+    present = [t for t in TIERS if any(
+        (r.get("tier") == t) for r in list(records) + list(vectors))]
+    legend = ""
+    if present:
+        items = "".join(f"<dt>{esc(t)}</dt><dd>{esc(TIERS[t])}</dd>" for t in present)
+        legend = ('<p class="sub">The <b>Tier</b> column is this row\'s triage, in the '
+                  'order worth working through:</p>'
+                  f'<dl class="tierkey">{items}</dl>')
+
     out = ['<h2 class="display">Records</h2>',
            '<p class="sub">The <b>Ref</b> column is how you name a record on the verdict '
            'form. To correct one, quote its Ref — for example R3 — and give the field and '
-           'the corrected value.</p>']
+           'the corrected value.</p>',
+           legend]
     if records:
         head = ("<tr><th>Ref</th><th>Row</th><th>Lineage</th><th>Host</th>"
                 "<th>Country</th><th>Site</th><th>Found</th><th>Tested</th><th>Tier</th>"
@@ -1481,7 +1800,7 @@ def _records_section(submission: Dict[str, Any]) -> str:
             f"<td>{esc(r.get('site'))}</td>"
             f"<td>{esc(_number(r.get('number_found')))}</td>"
             f"<td>{esc(_number(r.get('number_tested')))}</td>"
-            f"<td>{esc(r.get('tier'))}</td>"
+            f"<td>{esc(r.get('tier'))}{_row_flags(r)}</td>"
             f"<td class='wrapcell'>{esc(r.get('notes'))}</td>"
             "</tr>" for i, r in enumerate(records))
         out.append(f'<div class="tablewrap"><table><thead>{head}</thead>'
@@ -1498,12 +1817,29 @@ def _records_section(submission: Dict[str, Any]) -> str:
             f"<td>{esc(v.get('vector_species'))}</td>"
             f"<td>{esc(v.get('vector_method'))}</td>"
             f"<td>{esc(v.get('country'))}</td>"
-            f"<td>{esc(v.get('tier'))}</td>"
+            f"<td>{esc(v.get('tier'))}{_row_flags(v)}</td>"
             f"<td class='wrapcell'>{esc(v.get('notes'))}</td>"
             "</tr>" for i, v in enumerate(vectors))
         out.append(f'<div class="tablewrap"><table><thead>{head}</thead>'
                    f'<tbody>{rows}</tbody></table></div>')
     return "\n".join(out)
+
+
+def _row_flags(row: Dict[str, Any]) -> str:
+    """The flag codes behind a row's tier, named under it.
+
+    The tier vocabulary says "review" means at least one flag needs a curator's
+    judgment, and until 2026-08-19 the table never said which flag. A reader was told a
+    judgment was required and not what about. The codes are printed as row_flags writes
+    them, because those are the words the rest of the report and the check list use.
+    """
+    flags = row.get("flags") or []
+    codes = [str(f.get("code")) for f in flags if isinstance(f, dict) and f.get("code")]
+    if not codes:
+        return ""
+    return ('<br><span class="rowflags">'
+            + esc(", ".join(dict.fromkeys(codes)).replace("_", " "))
+            + "</span>")
 
 
 def _number(value: Any) -> Any:
@@ -1531,16 +1867,30 @@ def _workbook_section(workbook_path: Optional[Path], max_rows: int = 300) -> str
                 f'<div class="banner">Could not be rendered: {esc(exc)}. '
                 "The file itself is beside this report.</div>")
 
+    from .template_adapter import _is_example_row
+
     out = ['<h2 class="display">The submitted workbook</h2>',
-           '<div class="note">An exact copy of the submitted template tables, no '
-           'alterations.</div>']
+           '<div class="note">The submitted template tables as they arrived. Two things '
+           'are left out: the READ ME sheet, which is the same instructions in every '
+           'submission, and the template\'s own worked example rows where the submitter '
+           'left them in place — the template invites them to, so their presence says '
+           'nothing about the submission. Any row they typed over is their data and is '
+           'shown.</div>']
+    dropped_examples = 0
     try:
         for name in workbook.sheetnames:
+            # The READ ME is instructions shipped with the template, identical in every
+            # submission, and it costs a page of a report a curator has to read.
+            if name.strip().casefold() == "read me":
+                continue
             worksheet = workbook[name]
             rows: List[str] = []
             for index, values in enumerate(
                     worksheet.iter_rows(values_only=True), start=1):
                 if not values or all(v in (None, "") for v in values):
+                    continue
+                if _is_example_row(name, values):
+                    dropped_examples += 1
                     continue
                 if len(rows) >= max_rows:
                     rows.append(f'<tr><td colspan="99" class="rowno">…more rows in the '
@@ -1554,6 +1904,10 @@ def _workbook_section(workbook_path: Optional[Path], max_rows: int = 300) -> str
             out.append(f'<div class="tablewrap"><table>{"".join(rows)}</table></div>')
     finally:
         workbook.close()
+    if dropped_examples:
+        out.append(f'<div class="note">{dropped_examples} unmodified worked-example '
+                   f'row(s) from the blank template were left out of the tables above. '
+                   f'The screen ignores them too.</div>')
     return "\n".join(out)
 
 
@@ -1688,6 +2042,7 @@ def render_report(
         _checks_section(run, (submission.get('provenance') or {}).get('workbook'),
                         submission=submission, screen=screen),
         _names_section(submission),
+        _alt_names_section(submission),
         _sequences_section(screen),
         _alignment_section(alignments),
         _matrix_section(submission),

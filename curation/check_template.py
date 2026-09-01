@@ -503,6 +503,7 @@ def main(argv=None) -> int:
     reports = []
     submissions = []
     build_failures: List[str] = []
+    submission_books: List[Path] = []
     worst = 0
     for book in books:
         rep = screen(book, ref, known, claimed_elsewhere)
@@ -517,6 +518,9 @@ def main(argv=None) -> int:
             built = build_submission_from_path(book, submitter=submitter)
             if built is not None:
                 submissions.append(built)
+                # Which file each submission came from. The report renders one workbook
+                # in its appendix, and it must be the one the submission was built from.
+                submission_books.append(book)
             else:
                 # Not a template at all -- a supplementary spreadsheet travelling with the
                 # submission. Expected, and not a failure.
@@ -631,7 +635,18 @@ def main(argv=None) -> int:
             report = render_report(
                 submissions[0], run,
                 screen=reports,
-                workbook_path=books[0] if books else None,
+                # NOT books[0]. `books` is every .xlsx in the submission directory,
+                # sorted by name, and a submission usually travels with the paper's
+                # supplementary spreadsheets. The Shimizu submission put
+                # "11686_2026_1301_MOESM1_ESM.xlsx" -- a table of PCR annealing
+                # temperatures -- ahead of the template alphabetically, so the appendix
+                # rendered that while the header above it named the real workbook. A
+                # curator checking a row against "the submitted workbook" was reading
+                # somebody's thermocycler settings.
+                #
+                # Invisible until a submission arrived with more than one spreadsheet.
+                workbook_path=(submission_books[0] if submission_books
+                               else (books[0] if books else None)),
                 metadata=metadata,
                 submission_id=public_id,
                 revision=revision,

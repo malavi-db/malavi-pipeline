@@ -487,6 +487,11 @@ def build_submission_from_workbook(
         "vectors": vectors,
         "sequences": sequences,
         "proposed_lineages": proposed,
+        # Built above and, until 2026-08-19, dropped on the floor: only the accessions
+        # off these rows were kept, and the declarations themselves reached nothing. A
+        # submitter saying "the lineage you call SGS1 is the one I published as P15" is
+        # making a claim about MalAvi's own data, and no curator was ever shown it.
+        "alternative_names": alternative_names,
         "provenance": {
             "source": "template",
             "tool_version": __version__,

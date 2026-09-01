@@ -152,3 +152,40 @@ function showPrefillEntryIds() {
   Logger.log('submission_id; the one carrying 1 is revision. Both must match');
   Logger.log('review.verdict_form_entries in config/project.yml.');
 }
+
+
+/**
+ * Every text question's entry id at once, each tagged with its own marker.
+ *
+ * showPrefillEntryIds above answers only for the two ids config/project.yml pins, which
+ * is the right check for those two and no help at all for anything else. The override
+ * page's "Which hold are you clearing?" is the case that prompted this: a hold
+ * notification can hand the next curator a link with the submission, the revision AND
+ * the hold id already in it, but only if this number is known, and it is not written
+ * down anywhere.
+ *
+ * Nothing is submitted. Each text item is filled with a marker naming its own position,
+ * so the printed URL can be read straight across: title, then the entry.NNNN carrying
+ * its marker.
+ */
+function showAllPrefillEntryIds() {
+  var form = FormApp.openById(VERDICT_FORM_ID);
+  var response = form.createResponse();
+  var items = form.getItems(FormApp.ItemType.TEXT);
+  var labels = [];
+
+  for (var i = 0; i < items.length; i++) {
+    var marker = 'MARK' + i;
+    response = response.withItemResponse(items[i].asTextItem().createResponse(marker));
+    labels.push(marker + '  =  ' + items[i].getTitle());
+  }
+
+  Logger.log('%s text question(s). Nothing was submitted.', items.length);
+  Logger.log('');
+  for (var j = 0; j < labels.length; j++) {
+    Logger.log(labels[j]);
+  }
+  Logger.log('');
+  Logger.log('Prefilled URL — match each entry.NNNN to the marker it carries:');
+  Logger.log(response.toPrefilledUrl());
+}

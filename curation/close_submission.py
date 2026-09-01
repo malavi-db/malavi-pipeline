@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# @title Close a submission — decline it, withdraw it, or wait on its submitter
-# @purpose Produce the three ledger states nothing else could reach: declined, withdrawn
-#   and awaiting_submitter, so that a rejected submission actually finishes and a
-#   submitter waiting on us is recorded as such.
+# @title Close a submission — decline it, withdraw it, wait on its submitter, or reopen it
+# @purpose Produce the ledger states nothing else could reach: declined, withdrawn and
+#   awaiting_submitter, so that a rejected submission actually finishes and a submitter
+#   waiting on us is recorded as such -- and reopen a finished one when they come back.
 # @why Every rule downstream of a closed submission was written and tested and none of it
 #   ran, because no program moved a submission into any of these states. A rejection got a
 #   second look and then sat in `held` forever: the reserved names were never given back,
@@ -13,7 +13,7 @@
 # @critical-var DECLINE_REASONS
 # @critical-var WITHDRAW_REASON
 # @critical-flag close_submission.py "" --apply
-"""Finish a submission: decline it, record that the submitter withdrew it, or wait on them.
+"""Finish a submission — or revive one: decline, withdraw, wait on the submitter, reopen.
 
 Why this is a maintainer program
 --------------------------------
@@ -50,13 +50,31 @@ What each of the three means
 
 ``--ask``
     We have asked the submitter a question and cannot proceed until they answer. This
-    starts the 60-day clock; ``promote.py`` moves it to ``dormant`` when that expires,
-    which releases the reserved names. **No message is sent by this** — asking the question
-    is an email a human writes. This only records that we are waiting, which is what makes
-    the clock run and what stops the submission looking abandoned.
+    starts the 60-day clock; ``promote.py`` moves it to ``dormant`` when that expires.
+    Going dormant **keeps** the reserved names — see ``--reopen`` below. **No message is
+    sent by this** — asking the question is an email a human writes. This only records that
+    we are waiting, which is what makes the clock run and what stops the submission looking
+    abandoned.
 
-All three release the submission's reserved lineage names, and drop it out of the public
-queue, because ``public_queue`` shows live submissions only.
+``--reopen``
+    The submitter came back. Moves a ``declined`` or ``dormant`` submission to
+    ``in_review``, re-claims its reserved names, and clears the disposition so the decision
+    record stops reporting it as finished.
+
+    **This is the resubmission path, and it is deliberately not "file the form again".** A
+    curator who rejects a sequence for an indel asks the submitter to resequence; the work
+    that comes back belongs to the submission that was already reserved for it. Filing a
+    fresh form would mint a new identifier, start a new date, and — because name
+    reservation priority is earliest-timestamp-wins — put the submitter behind anyone who
+    claimed the name while they were at the bench. Reopening keeps the identifier, the
+    original date and the claim.
+
+    The new material still has to reach the submission directory: reopening moves the
+    ledger, not files. Re-screen after the corrected workbook is in place.
+
+``--decline`` and ``--withdraw`` release the submission's reserved lineage names.
+``--ask`` does not, and neither does the dormancy that follows it. All of them drop the
+submission out of the public queue, because ``public_queue`` shows live submissions only.
 
 Why the reason is a code and not a sentence
 -------------------------------------------
@@ -83,6 +101,7 @@ from typing import Any, Dict, List, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from malavi_curation.config import load_config, repo_root      # noqa: E402
 from malavi_curation import ledger as ledger_mod               # noqa: E402
+from malavi_curation import public_feeds                       # noqa: E402
 
 # Writing nothing is the default, as in every other program here that changes the ledger.
 DRY_RUN_DEFAULT = True
@@ -96,11 +115,22 @@ DECLINE_REASONS = ledger_mod.DECLINE_REASON_CODES
 WITHDRAW_REASON = "withdrawn_by_submitter"
 
 # action -> (target state, what to call it in a sentence)
+#
+# `reopen` targets in_review rather than ready_for_review because a reopened submission has
+# already been screened once and already carries verdicts; sending it back to
+# ready_for_review would describe it as untouched. The ledger permits the move from both
+# closed states (see ALLOWED_TRANSITIONS) and re-claims the names on the way.
 ACTIONS = {
     "decline": ("declined", "declined"),
     "withdraw": ("withdrawn", "withdrawn by the submitter"),
     "ask": ("awaiting_submitter", "waiting on the submitter"),
+    "reopen": ("in_review", "reopened"),
 }
+
+# The reason recorded when a submission is revived. Not the maintainer's to choose: what
+# happened is that a finished submission came back, and `reopened` is the vocabulary the
+# ledger already keeps for it so that history reads sensibly.
+REOPEN_REASON = "reopened"
 
 
 def chosen_action(arguments: argparse.Namespace) -> str:
@@ -125,6 +155,14 @@ def reason_for(action: str, requested: str) -> Tuple[str, str]:
                         f"decision record.")
         return WITHDRAW_REASON, ""
 
+    if action == "reopen":
+        # Same reasoning as a withdrawal: we are recording what happened, not judging it.
+        if requested and requested != REOPEN_REASON:
+            return "", (f"a reopening is always recorded as {REOPEN_REASON!r}; why the "
+                        f"submission was closed is already in its history, and why it came "
+                        f"back is not a disposition.")
+        return REOPEN_REASON, ""
+
     if action == "ask":
         # No disposition is being recorded, so there is nothing for a code to describe.
         if requested:
@@ -148,24 +186,47 @@ def describe_close(action: str, before: str, names: List[str],
     target, phrase = ACTIONS[action]
     lines = [f"  {before} -> {target}"]
 
-    if names:
-        lines.append(f"  reserved names released: {', '.join(sorted(names))}")
+    # Only a decline or a withdrawal gives a name back. Saying "released" on the other two
+    # would be the single most damaging thing this program could misreport: an operator who
+    # believes NECMON01 is free will offer it to the next submitter.
+    if action in ("decline", "withdraw"):
+        if names:
+            lines.append(f"  reserved names released: {', '.join(sorted(names))}")
+        else:
+            lines.append("  reserved names released: none were held")
+    elif action == "reopen":
+        if names:
+            lines.append(f"  reserved names re-claimed: {', '.join(sorted(names))}")
+            lines.append("  verify them against the reservation store before relying on "
+                         "them: a name can have been issued elsewhere while this was closed")
+        else:
+            lines.append("  reserved names re-claimed: none were held")
     else:
-        lines.append("  reserved names released: none were held")
+        if names:
+            lines.append(f"  reserved names KEPT: {', '.join(sorted(names))}")
+        else:
+            lines.append("  reserved names KEPT: none were held")
 
-    lines.append("  it drops out of the public queue, which lists live submissions only")
+    if action == "reopen":
+        lines.append("  it returns to the public queue as a live submission")
+    else:
+        lines.append("  it drops out of the public queue, which lists live submissions only")
 
     if action == "decline":
         lines.append("  notify_submitters.py will send the decline notice once the 24-hour "
                      "wait has run")
     elif action == "withdraw":
         lines.append("  no message is sent; the submitter is the one who asked")
+    elif action == "reopen":
+        lines.append("  no message is sent; re-screen once the new material is in the "
+                     "submission directory, then the curators review it as usual")
     else:
         # The same reader the clock itself uses, so the number quoted here is the number
         # that will actually fire rather than a 60 hard-coded beside a configurable one.
         days = ledger_mod._review_config(config)["awaiting_submitter_timeout_days"]
         lines.append(f"  the {days}-day clock starts now; promote.py moves it to dormant "
                      f"if they do not reply")
+        lines.append("  dormancy does NOT give the names back; only a decline does")
         lines.append("  no message is sent; asking the question is an email a human writes")
 
     lines.append(f"  recorded as: {phrase}")
@@ -174,18 +235,54 @@ def describe_close(action: str, before: str, names: List[str],
 
 def close(entry: Any, action: str, reason: str, actor: str, at: Optional[str] = None,
           config: Optional[Dict[str, Any]] = None) -> Tuple[bool, List[str]]:
-    """Move one submission. Returns ``(moved, lines to print)``.
+    """Move one submission, in either direction. Returns ``(moved, lines to print)``.
+
+    Named ``close`` because finishing a submission is what it was written for; it also
+    reopens one, which is the same act of moving the ledger and refusing to if the rules
+    say no.
 
     Never raises for a move the rules forbid. A refusal here is ordinary — an approved
     submission cannot be declined until somebody flags it, which is the ledger insisting
-    that a decline follows an objection rather than replacing one — and the operator needs
-    to read why, not a traceback.
+    that a decline follows an objection rather than replacing one; a submission that is
+    still live cannot be reopened, because there is nothing to revive — and the operator
+    needs to read why, not a traceback.
     """
     target, _ = ACTIONS[action]
     before = entry.state
     # Read before the move: transition() empties nothing, but name_state changes underneath
     # and the names are the thing the operator most wants confirmed.
     names = list(entry.reserved_names)
+
+    # Reopening is only ever the revival of a FINISHED submission, and this check is what
+    # keeps it that way.
+    #
+    # It is not a tidiness rule. `held -> in_review` is a legitimate transition -- it is
+    # what clearing a hold does -- and transition() guards only `approved` and `released`,
+    # because the lead-only rule and the consultation record live in override_hold(), not
+    # in the state machine. So without this, `--reopen` on a held submission would walk it
+    # back to in_review with the curator's objection still standing, attributed to nobody,
+    # with no record of who was consulted: a maintainer-side bypass of the one power the
+    # ledger deliberately reserves to a lead. Caught by
+    # test_a_live_submission_cannot_be_reopened, 2026-08-20.
+    if action == "reopen" and before not in ledger_mod.CLOSED_STATES:
+        why = ("is still live, so there is nothing to revive"
+               if before in ledger_mod.LIVE_STATES
+               else "is terminal and is not ours to revive")
+        lines = [
+            f"  REFUSED: {entry.submission_id} is {before}, which {why}.",
+            f"           Reopening revives a finished submission "
+            f"({' or '.join(ledger_mod.CLOSED_STATES)}).",
+        ]
+        if before in ledger_mod.LIVE_STATES:
+            lines.append("           To clear a hold that is blocking this one, a lead "
+                         "answers the verdict form; that route records who was consulted.")
+        elif before == "withdrawn":
+            lines.append("           A submitter who took their submission back has to "
+                         "send it again; we do not reinstate it on their behalf.")
+        elif before == "released":
+            lines.append("           It is published. Correct the records with "
+                         "correct_store.py instead.")
+        return False, lines
 
     try:
         ledger_mod.transition(entry, target, actor=actor, at=at, reason=reason,
@@ -210,12 +307,17 @@ def main(argv=None) -> int:
                       help="the submitter took it back")
     what.add_argument("--ask", action="store_true",
                       help="we asked the submitter something; start the 60-day clock")
+    what.add_argument("--reopen", action="store_true",
+                      help="the submitter came back; revive a declined or dormant "
+                           "submission, keeping its id, date and reserved names")
 
     parser.add_argument("--reason", default="", metavar="CODE",
                         help=f"why, for --decline: {', '.join(DECLINE_REASONS)}")
     parser.add_argument("--actor", default="maintainer",
                         help="who is recording this; goes in the ledger and the decision "
                              "record")
+    parser.add_argument("--no-publish", action="store_true",
+                        help="do not rebuild and publish the public queue afterwards")
     parser.add_argument("--apply", action="store_true",
                         help="write the change (default is to describe it only)")
     arguments = parser.parse_args(argv)
@@ -259,6 +361,14 @@ def main(argv=None) -> int:
         return 1
     if not arguments.apply:
         print("\n[dry-run] nothing was written. Re-run with --apply to record this.")
+        return 0
+
+    # A closed submission drops off the public queue entirely -- it is never labeled
+    # "declined". A reopened one reappears on it. Publishing here is what makes either
+    # change prompt rather than dependent on someone rebuilding the feeds later.
+    if not arguments.no_publish:
+        print("")
+        public_feeds.refresh()
     return 0
 
 

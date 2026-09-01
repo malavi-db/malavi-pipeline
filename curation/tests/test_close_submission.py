@@ -308,3 +308,122 @@ def test_the_three_actions_are_mutually_exclusive(close_submission):
     with pytest.raises(SystemExit):
         close_submission.main(["--submission", SUBMISSION])
 
+
+
+# ------------------------------------------------------------------- reopening
+#
+# The resubmission path. A curator rejects a sequence for an indel and asks the submitter to
+# resequence; weeks or months later the corrected data arrive. These tests pin the two
+# things that make reopening the *original* submission worth doing at all -- the identifier
+# survives, and so does the lineage name the submitter was promised.
+
+
+def test_a_declined_submission_can_be_reopened(close_submission, registry_path):
+    entries, entry = build("held", registry_path=registry_path)
+    close_submission.close(entry, "decline", "data_not_verifiable", actor="maintainer",
+                           at="2026-09-01T00:00:00+00:00", config=CONFIG)
+    assert entry.state == "declined"
+
+    moved, lines = close_submission.close(entry, "reopen",
+                                          close_submission.REOPEN_REASON,
+                                          actor="maintainer",
+                                          at="2026-11-01T00:00:00+00:00", config=CONFIG)
+    assert moved
+    assert entry.state == "in_review"
+    # The disposition has to go, or the committed decision record goes on reporting a live
+    # submission as declined months after it came back.
+    assert entry.final_disposition is None
+    assert any(h["event"] == "reopened" for h in entry.history)
+    assert any("re-claimed" in line for line in lines)
+
+
+def test_reopening_gives_the_reserved_name_back_to_its_original_claimant(
+        close_submission, registry_path):
+    """The reason this is not "submit the form again".
+
+    Name reservation priority is earliest-timestamp-wins. A submitter who resequences
+    because we asked them to must not lose their claim for having done the work.
+    """
+    entries, entry = build("held", names=("NECMON01",), registry_path=registry_path)
+    close_submission.close(entry, "decline", "data_not_verifiable", actor="maintainer",
+                           at="2026-09-01T00:00:00+00:00", config=CONFIG)
+    assert entry.name_state == "released"
+
+    close_submission.close(entry, "reopen", close_submission.REOPEN_REASON,
+                           actor="maintainer", at="2026-11-01T00:00:00+00:00",
+                           config=CONFIG)
+    assert entry.name_state == "claimed"
+    assert entry.reserved_names == ["NECMON01"]
+    # The submission keeps the date it originally arrived, which is what the priority rule
+    # reads. Reopening must not look like a fresh arrival.
+    assert entry.received_at == "2026-08-01T00:00:00+00:00"
+
+
+def test_a_dormant_submission_keeps_its_names_and_can_be_reopened(
+        close_submission, registry_path):
+    """The indefinite-hold case: they never answered, and the name is still theirs."""
+    entries, entry = build("held", names=("NECMON01",), registry_path=registry_path)
+    close_submission.close(entry, "ask", "", actor="maintainer",
+                           at="2026-09-01T00:00:00+00:00", config=CONFIG)
+    assert entry.state == "awaiting_submitter"
+    assert entry.name_state == "claimed"
+
+    # The 60-day clock expiring is what promote.py applies; it must not take the name.
+    ledger.transition(entry, "dormant", actor="promoter", at="2026-11-05T00:00:00+00:00",
+                      reason="submitter_unresponsive", config=CONFIG)
+    assert entry.state == "dormant"
+    assert entry.name_state == "claimed", "dormancy must not release a reservation"
+
+    moved, _ = close_submission.close(entry, "reopen", close_submission.REOPEN_REASON,
+                                      actor="maintainer", at="2027-03-01T00:00:00+00:00",
+                                      config=CONFIG)
+    assert moved and entry.state == "in_review"
+    assert entry.name_state == "claimed"
+
+
+def test_a_dormant_submission_can_still_be_declined_to_free_the_name(
+        close_submission, registry_path):
+    """Now that the clock no longer frees a name, something else has to."""
+    entries, entry = build("held", names=("NECMON01",), registry_path=registry_path)
+    close_submission.close(entry, "ask", "", actor="maintainer",
+                           at="2026-09-01T00:00:00+00:00", config=CONFIG)
+    ledger.transition(entry, "dormant", actor="promoter", at="2026-11-05T00:00:00+00:00",
+                      reason="submitter_unresponsive", config=CONFIG)
+
+    moved, lines = close_submission.close(entry, "decline", "data_not_verifiable",
+                                          actor="maintainer",
+                                          at="2027-06-01T00:00:00+00:00", config=CONFIG)
+    assert moved, lines
+    assert entry.state == "declined"
+    assert entry.name_state == "released"
+
+
+def test_a_live_submission_cannot_be_reopened(close_submission, registry_path):
+    """There is nothing to revive, and the ledger says so rather than moving it."""
+    entries, entry = build("held", registry_path=registry_path)
+    moved, lines = close_submission.close(entry, "reopen", close_submission.REOPEN_REASON,
+                                          actor="maintainer",
+                                          at="2026-09-01T00:00:00+00:00", config=CONFIG)
+    assert not moved
+    assert any("REFUSED" in line for line in lines)
+
+
+def test_a_withdrawal_stays_terminal_and_cannot_be_reopened(close_submission,
+                                                            registry_path):
+    """A submission somebody took back is not ours to revive."""
+    entries, entry = build("held", registry_path=registry_path)
+    close_submission.close(entry, "withdraw", close_submission.WITHDRAW_REASON,
+                           actor="maintainer", at="2026-09-01T00:00:00+00:00",
+                           config=CONFIG)
+    moved, lines = close_submission.close(entry, "reopen", close_submission.REOPEN_REASON,
+                                          actor="maintainer",
+                                          at="2026-11-01T00:00:00+00:00", config=CONFIG)
+    assert not moved
+    assert any("REFUSED" in line for line in lines)
+
+
+def test_a_reopening_reason_is_not_the_maintainers_to_choose(close_submission):
+    code, complaint = close_submission.reason_for("reopen", "duplicate")
+    assert not code and "reopened" in complaint
+    code, complaint = close_submission.reason_for("reopen", "")
+    assert code == close_submission.REOPEN_REASON and not complaint

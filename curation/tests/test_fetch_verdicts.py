@@ -488,3 +488,50 @@ def test_the_decline_notice_becomes_due_after_the_close(fetch, entries, registry
     at = datetime.fromisoformat(closed)
     assert notify.settled(entry, CONFIG, now=at + timedelta(hours=6))[0] is False
     assert notify.settled(entry, CONFIG, now=at + timedelta(hours=48))[0] is True
+
+
+# ------------------------------------------------------- repeated columns in the sheet
+#
+# The responses sheet keeps a column for every question the form has ever had. A question
+# deleted, or re-created rather than renamed during a hand edit, leaves its column behind
+# forever. Most of that is harmless clutter nothing reads.
+#
+# It stops being harmless when the leftover shares a name with a live column, because
+# csv.DictReader keeps the RIGHTMOST of a repeated name -- and the leftover is usually the
+# one on the right, and always empty. Found on the live sheet 2026-08-14: two columns
+# titled "Why is it being closed?", one live and one orphaned, which would have made every
+# close request parse as `unknown closing reason ''`.
+
+def test_a_repeated_column_the_parser_reads_is_refused(fetch):
+    text = ("Timestamp,Submission id,Why is it being closed?,Why is it being closed?\n"
+            "2026-08-14 10:00:00,MALAVI-SUB-2026-000001,It is already in MalAvi,\n")
+    with pytest.raises(fetch.DuplicateColumns) as raised:
+        fetch.read_rows(text)
+    assert "Why is it being closed?" in str(raised.value)
+
+
+def test_a_repeated_column_nothing_reads_is_ignored(fetch):
+    """Orphan columns are the normal state of a form-linked sheet. Only refuse over the
+    ones that would actually be misread, or the guard cries wolf and gets switched off."""
+    text = ("Timestamp,Submission id,Some old question,Some old question\n"
+            "2026-08-14 10:00:00,MALAVI-SUB-2026-000001,a,b\n")
+    rows = fetch.read_rows(text)
+    assert len(rows) == 1
+    assert rows[0]["Submission id"] == "MALAVI-SUB-2026-000001"
+
+
+def test_a_clean_header_parses(fetch):
+    text = ("Timestamp,Submission id,Why is it being closed?\n"
+            "2026-08-14 10:00:00,MALAVI-SUB-2026-000001,It is already in MalAvi\n")
+    rows = fetch.read_rows(text)
+    assert rows[0]["Why is it being closed?"] == "It is already in MalAvi"
+
+
+def test_every_column_the_parser_reads_is_in_the_guarded_set():
+    """COLUMNS_READ is derived from the COL_ constants, so a new column joins it for free.
+    Stated as a test anyway: if that derivation is ever replaced by a hand-written list,
+    this is what notices the first time somebody forgets to extend it."""
+    from malavi_curation import verdicts
+    declared = {value for name, value in vars(verdicts).items()
+                if name.startswith("COL_") and isinstance(value, str)}
+    assert declared == set(verdicts.COLUMNS_READ)

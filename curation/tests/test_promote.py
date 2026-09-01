@@ -68,7 +68,7 @@ def seed(inbox, build):
 
 # ---------------------------------------------------------------- what it applies
 
-def test_an_expired_awaiting_submitter_timeout_goes_dormant_and_releases_the_names(
+def test_an_expired_awaiting_submitter_timeout_goes_dormant_and_keeps_the_names(
         promote, workspace, registry):
     _, inbox = workspace
 
@@ -83,8 +83,13 @@ def test_an_expired_awaiting_submitter_timeout_goes_dormant_and_releases_the_nam
 
     entries = ledger.load(inbox)
     assert entries[SUBMISSION].state == "dormant"
-    # The names going back is the point of the timeout, not a side effect.
-    assert entries[SUBMISSION].name_state == "released"
+    # CHANGED 2026-08-20. The names used to go back here, and that was the point of the
+    # timeout. It is now the opposite: the clock records that we have stopped expecting a
+    # prompt answer and nothing else, because a submitter who is away resequencing at a
+    # curator's request must not lose the name they were promised. Only a decline returns
+    # one. See test_dormancy_does_not_release_a_reservation in test_ledger.py.
+    assert entries[SUBMISSION].name_state == "claimed"
+    assert entries[SUBMISSION].reserved_names == ["TUMIG31"]
 
 
 def test_the_timeout_does_not_fire_early(promote, workspace, registry):

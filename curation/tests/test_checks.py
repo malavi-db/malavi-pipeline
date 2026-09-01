@@ -487,3 +487,51 @@ def test_index_backed_flags_are_skipped_when_the_release_is_not_on_disk(monkeypa
         assert results[code].outcome is Outcome.SKIP, \
             f"{code} cannot pass when nothing was compared against MalAvi"
         assert "release tables" in (results[code].skip_reason or "")
+
+
+# ------------------------------------------------------- ranking nearest lineages
+#
+# NECMON01 (2026-08-20) was reported as nearest to P_RBQ18: 23 mismatches, but over only
+# 133 comparable positions -- 82.7% identity, and P_RBQ18 is the least-covered sequence in
+# the whole alignment. Its true nearest relative was N_CIAE08 at 38 mismatches over 477
+# positions, 92.0%. The curator report named a Plasmodium as the closest relative of a
+# Haemoproteus, which is why the automated screen looked alarming while a BLAST did not.
+
+def _rank(d, c):
+    from malavi_curation.sequence_check import _neighbor_rank
+    return _neighbor_rank(d, c)
+
+
+def test_a_thinly_covered_reference_does_not_outrank_a_full_length_one():
+    """The NECMON01 case, as bare numbers."""
+    thin = _rank(23, 133)      # 82.7% over a third of the window
+    full = _rank(38, 477)      # 92.0% over all of it
+    assert full < thin
+
+
+def test_neighbors_are_ranked_by_rate_not_by_count():
+    assert _rank(38, 477) < _rank(23, 133)
+    assert _rank(5, 400) < _rank(4, 100)
+
+
+def test_an_exact_match_still_wins_however_little_it_covers():
+    """Load-bearing: 'never report a known lineage as new' is checked against nearest[0].
+
+    An exact match must not be made to compete on rate, or a lineage MalAvi already holds
+    could be announced as novel -- the one outcome worse than a confusing neighbor list.
+    """
+    # An exact match over 40 positions still beats a 1-mismatch match over all 479, even
+    # though the second is better covered and its rate is tiny.
+    assert _rank(0, 40) < _rank(1, 479)
+    # ...and beats a thinly covered near-match too, which is the same rule from the
+    # other side.
+    assert _rank(0, 40) < _rank(1, 100)
+
+
+def test_among_exact_matches_the_best_covered_comes_first():
+    assert _rank(0, 479) < _rank(0, 200)
+
+
+def test_among_thin_references_the_better_rate_still_wins():
+    """They sort after well-covered ones, but they are ordered, not discarded."""
+    assert _rank(5, 100) < _rank(20, 100)

@@ -306,7 +306,10 @@ def test_apply_writes_the_revision(apply_corrections, flagged, registry_path, tm
     approve(flagged, correction, registry_path)
     ledger.save(inbox, {SUBMISSION: flagged})
 
-    assert apply_corrections.main(["--apply"]) == 0
+    # 3, not 0: the revision is recorded and NO data has changed yet. Zero would say the
+    # correction had been applied to something, which is what this program spent a
+    # fortnight appearing to do while the value went on being wrong.
+    assert apply_corrections.main(["--apply"]) == 3
     capsys.readouterr()
 
     reloaded = ledger.load(inbox)[SUBMISSION]
@@ -337,10 +340,72 @@ def test_the_submission_filter_leaves_the_others_alone(apply_corrections, flagge
         approve(entry, correction, registry_path)
     ledger.save(inbox, {SUBMISSION: flagged, other.submission_id: other})
 
-    assert apply_corrections.main(["--apply", "--submission", SUBMISSION]) == 0
+    assert apply_corrections.main(["--apply", "--submission", SUBMISSION]) == 3
     capsys.readouterr()
 
     reloaded = ledger.load(inbox)
     assert reloaded[SUBMISSION].revision == 2
     assert reloaded["MALAVI-SUB-2026-000002"].revision == 1
     assert not reloaded["MALAVI-SUB-2026-000002"].corrections[0].applied
+
+
+# ------------------------------------------------------- what it says it has NOT done
+#
+# The bug these pin: this program bumps a revision and sets applied_at, and changes no
+# data anywhere. The correction is free text a curator typed; nothing parses it, on
+# purpose. Meanwhile RUNBOOK said of correct_store.py "not for a curator fixing a
+# submitter's rows before ingest; that is apply_corrections.py", and the verdict form told
+# the curator "a maintainer applies this -- you do not need to touch any files". So the
+# revision bumped, the report regenerated from the unchanged workbook and said what it had
+# said before, curators re-approved, ingest wrote the uncorrected value, and every gate
+# reported success.
+
+def test_a_recorded_correction_says_no_data_has_changed(apply_corrections, flagged,
+                                                        registry_path, tmp_path,
+                                                        monkeypatch, capsys):
+    inbox = _workspace(apply_corrections, monkeypatch, tmp_path, registry_path)
+    correction = propose(flagged, registry_path)
+    approve(flagged, correction, registry_path)
+    ledger.save(inbox, {SUBMISSION: flagged})
+
+    assert apply_corrections.main(["--apply"]) == 3
+    out = capsys.readouterr().out
+    assert "NOT YET IN THE DATA" in out
+    assert "correct_store.py" in out, "say which program actually changes a value"
+    assert "corrected workbook" in out, "and say what the other route is"
+    assert correction.id in out, "name the correction, so the follow-up is specific"
+
+
+def test_a_dry_run_promises_nothing(apply_corrections, flagged, registry_path, tmp_path,
+                                    monkeypatch, capsys):
+    """The follow-up belongs to work that was actually recorded."""
+    inbox = _workspace(apply_corrections, monkeypatch, tmp_path, registry_path)
+    correction = propose(flagged, registry_path)
+    approve(flagged, correction, registry_path)
+    ledger.save(inbox, {SUBMISSION: flagged})
+
+    assert apply_corrections.main([]) == 0
+    out = capsys.readouterr().out
+    assert "[dry-run]" in out
+    assert "NOT YET IN THE DATA" not in out
+
+
+def test_a_refused_correction_gets_no_follow_up(apply_corrections, flagged, registry_path,
+                                                tmp_path, monkeypatch, capsys):
+    """Nothing was recorded, so there is nothing to carry across."""
+    inbox = _workspace(apply_corrections, monkeypatch, tmp_path, registry_path)
+    correction = propose(flagged, registry_path)
+    approve(flagged, correction, registry_path)
+    # The flag is withdrawn between approval and this run, which is the one case
+    # apply_correction() refuses.
+    held = ledger.blocking_holds(flagged)[0]
+    ledger.override_hold(flagged, held.id, "lead@example.edu", consulted=["bob"],
+                         consulted_on="2026-08-03", consulted_how="email",
+                         at="2026-08-03T00:00:00+00:00", note="settled",
+                         registry_path=registry_path)
+    ledger.save(inbox, {SUBMISSION: flagged})
+
+    code = apply_corrections.main(["--apply"])
+    out = capsys.readouterr().out
+    assert "NOT YET IN THE DATA" not in out
+    assert code == 0

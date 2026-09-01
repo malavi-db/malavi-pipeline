@@ -56,9 +56,31 @@ COL_RETRACT_WHY = "What changed your mind?"
 
 COL_CORRECTION_ID = "Which correction are you approving?"
 COL_DISCUSSED_WITH = "Who did you discuss it with?"
+# NOT "What was resolved?", which is what this question was called until 2026-08-14 -- the
+# same title as the override page's question above. Google writes a question title verbatim
+# as the response sheet's column header, so two identically titled questions produce two
+# identically named columns, and csv.DictReader keeps the LAST one. Column order follows
+# item order, so this page's column (item 24) silently answered for the override page's
+# (item 12): a lead cleared another curator's hold, typed the justification the form calls
+# required, and it was stored as "". No test could see it -- the fixtures build a row dict,
+# and a dict cannot hold one key twice.
+COL_CONCLUDED = "What did the discussion conclude?"
 
 COL_CLOSE_REASON = "Why is it being closed?"
 COL_CLOSE_NOTE = "Anything to add?"
+
+#: Every column this module reads out of a response row.
+#:
+#: Built by collecting the constants above rather than by listing them again, so a column
+#: added to the parser cannot be left out of it. Used by fetch_verdicts.duplicate_columns
+#: to decide which repeated headers in the responses sheet actually matter: the sheet
+#: collects an orphan column from every hand edit to the form and most are harmless, but a
+#: repeat of one of THESE is read wrong rather than ignored -- csv.DictReader keeps the
+#: rightmost, which is usually the dead one.
+COLUMNS_READ = frozenset(
+    value for name, value in list(globals().items())
+    if name.startswith("COL_") and isinstance(value, str)
+)
 
 # --- Answer values, as the form offers them -------------------------------------------
 ACTION_VERDICT = "Record a verdict on a submission"
@@ -398,7 +420,11 @@ def _parse_correction_approval(row, submission_id, address, at):
                   at=at, revision=_revision(row), target_id=target,
                   consulted=[part.strip() for part in re.split(r"[,;]", discussed)
                              if part.strip()],
-                  reason_text=_text(row.get(COL_RESOLVED)))
+                  # No fallback to COL_RESOLVED if this column is absent. A fallback would
+                  # read the override page's column instead and quietly restore the bug it
+                  # was renamed to fix -- and it would hide whether the live form has
+                  # actually been renamed, which nothing here can otherwise tell.
+                  reason_text=_text(row.get(COL_CONCLUDED)))
 
 
 def _parse_close(row, submission_id, address, at):

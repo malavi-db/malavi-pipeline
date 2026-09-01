@@ -194,3 +194,77 @@ def test_blocking_screen_errors_never_reach_the_public_page(feeds_cli):
 def test_an_unscreened_submission_with_no_ledger_entry_is_simply_queued(feeds_cli):
     label, _pill = feeds_cli.public_status(None, screened=False, has_errors=False)
     assert label == "In the queue"
+
+
+# --------------------------------------------------------------------------------------
+# An approval is not public until the publish hold has run out
+# --------------------------------------------------------------------------------------
+#
+# The queue must not say "Accepted" inside the hold window. The hold exists so a second
+# curator can still object; a queue that published the approval immediately would have to
+# walk it back to "Under review" in front of the submitter when a late hold landed. That
+# retraction would be legible on a public page even though the hold itself is deliberately
+# not -- which defeats the whole lossy mapping above.
+
+from datetime import datetime, timedelta, timezone                       # noqa: E402
+
+from malavi_curation import ledger as _ledger                            # noqa: E402
+
+
+def _entry(state):
+    """A minimal ledger entry in the given state."""
+    return _ledger.Entry(submission_id="MALAVI-SUB-2026-000001", track="A",
+                         received_at="2026-01-01T00:00:00+00:00", state=state)
+
+
+def _approved_entry(approved_at):
+    """A minimal approved ledger entry, approved at the given moment."""
+    entry = _entry("approved")
+    entry.approved_at = approved_at
+    return entry
+
+
+def _stamp(hours_ago):
+    moment = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+    return moment.replace(microsecond=0).isoformat()
+
+
+def test_an_approval_inside_the_hold_still_reads_as_under_review(feeds_cli):
+    entry = _approved_entry(_stamp(1))
+    assert feeds_cli.public_review_state(entry) == "in_review"
+    label, _pill = feeds_cli.public_status(
+        feeds_cli.public_review_state(entry), screened=True, has_errors=False)
+    assert label == "Under review"
+
+
+def test_an_approval_becomes_public_once_the_hold_has_elapsed(feeds_cli):
+    entry = _approved_entry(_stamp(25))
+    assert feeds_cli.public_review_state(entry) == "approved"
+    label, _pill = feeds_cli.public_status(
+        feeds_cli.public_review_state(entry), screened=True, has_errors=False)
+    assert label == "Accepted"
+
+
+def test_a_late_hold_keeps_an_elapsed_approval_off_the_public_page(feeds_cli):
+    """A hold recorded late in the window still wins, as it does everywhere else."""
+    entry = _approved_entry(_stamp(25))
+    entry.verdicts.append(_ledger.Verdict(id="V1", curator="sari", verdict="hold",
+                                          revision=1, at=_stamp(2)))
+    assert _ledger.blocking_holds(entry)
+    assert feeds_cli.public_review_state(entry) == "in_review"
+
+
+def test_an_approval_with_no_timestamp_is_not_published(feeds_cli):
+    """Missing data must fail closed. Treating it as elapsed would publish immediately."""
+    assert feeds_cli.public_review_state(_approved_entry("")) == "in_review"
+
+
+def test_an_unreadable_approval_timestamp_is_not_published(feeds_cli):
+    assert feeds_cli.public_review_state(_approved_entry("8/20/2026")) == "in_review"
+
+
+@pytest.mark.parametrize("state", ["received", "in_review", "held", "declined",
+                                   "withdrawn", "released"])
+def test_every_other_state_passes_through_untouched(feeds_cli, state):
+    """The hold rule applies to approvals only; it must not reinterpret anything else."""
+    assert feeds_cli.public_review_state(_entry(state)) == state

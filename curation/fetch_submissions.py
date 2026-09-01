@@ -103,11 +103,31 @@ def download_drive_file(file_id: str, dest_dir: Path,
     only because the unauthenticated download endpoint serves an HTML page instead of the
     file once a file is large enough.
 
-    The server supplies the original filename in Content-Disposition, which is
-    far more useful to a curator than the opaque file id.
+    The original filename matters: a curator reads these directories by eye, and
+    ``check_template.py`` finds the workbook by looking for an ``.xlsx``. The two download
+    paths report it differently, and getting that wrong costs the extension, not just the
+    name:
+
+    * unauthenticated -- ``drive.google.com/uc`` sets Content-Disposition, read below;
+    * authenticated -- ``/drive/v3/files/{id}?alt=media`` returns the bytes and **no**
+      Content-Disposition at all, so the name has to be asked for separately.
+
+    Until 2026-08-19 only the first was implemented, and every file fetched through the
+    service account landed as ``<file id>.bin``. It went unnoticed because each rehearsal
+    before then ran against a link-shared sheet, which takes the other branch.
     """
+    name = None
     if token:
         url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+        # Ask for the name first; ?alt=media answers with bytes and nothing else.
+        try:
+            meta, _ = _get(f"https://www.googleapis.com/drive/v3/files/{file_id}"
+                           f"?fields=name", token)
+            name = (json.loads(meta).get("name") or "").strip() or None
+        except Exception:
+            # A missing name is recoverable -- the id-based fallback below still
+            # produces a usable file. Failing the whole download would not be.
+            name = None
     else:
         url = f"https://drive.google.com/uc?export=download&id={file_id}"
     body, headers = _get(url, token)
@@ -129,11 +149,11 @@ def download_drive_file(file_id: str, dest_dir: Path,
         else:
             return None
 
-    name = None
-    disp = headers.get("content-disposition", "")
-    m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', disp)
-    if m:
-        name = urllib.parse.unquote(m.group(1)).strip()
+    if not name:
+        disp = headers.get("content-disposition", "")
+        m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', disp)
+        if m:
+            name = urllib.parse.unquote(m.group(1)).strip()
     if not name:
         name = f"{file_id}.bin"
     # Never let a supplied filename escape the destination directory.

@@ -98,6 +98,16 @@ var REPORTS_FOLDER_ID = 'PASTE_THE_REPORTS_FOLDER_ID_HERE';
 var SHARED_SECRET = 'PASTE_THE_SHARED_SECRET_HERE';
 
 // Who is told when a report is ready. Keep in step with config/curators.yml.
+//
+// THE LIVE LIST IS LONGER THAN THIS ONE, DELIBERATELY. This file is published to
+// malavi-db/malavi-pipeline, so a curator's personal address must not be written here;
+// config/curators.yml, which is not published, is the record of who is a curator. Add the
+// address in the Apps Script editor, to the live copy of this array, and leave this one
+// alone.
+//
+// Which means: do not paste this whole file over the live script to update it. Editing
+// this array in place in the editor is the supported way. Pasting also blanks the folder
+// id and the shared secret below — see the warning in RUNBOOK §1c.
 var CURATORS = [
   'vaellis@udel.edu'
 ];
@@ -158,6 +168,9 @@ function doPost(e) {
     }
     if (action === 'decline_notice') {
       return reply_(declineNotice_(payload));
+    }
+    if (action === 'verdict_notice') {
+      return reply_(verdictNotice_(payload));
     }
 
     // 5. The file itself.
@@ -402,6 +415,44 @@ function confirmNames_(payload) {
  * could not be reconciled with the paper -- and a submitter who reads this as a permanent
  * verdict is a contributor MalAvi has lost for no reason.
  */
+/**
+ * Tell the other curators that somebody recorded a verdict.
+ *
+ * Until this existed, a verdict was visible only to whoever next ran fetch_verdicts on
+ * BIOMIX. A hold was invisible to the curator it was blocking, and an override was
+ * invisible to the curator whose objection had just been set aside -- which is the one
+ * person entitled to know.
+ *
+ * The body is composed on the maintainer's side, because that is where the ledger is: the
+ * verdict id, the reason, the resulting state and the link a reader should follow are all
+ * things this script has no way to know.
+ *
+ * BUT THE RECIPIENTS ARE NOT TAKEN FROM THE PAYLOAD. They are CURATORS, minus whoever the
+ * payload says performed the act. A signed request that could name its own recipients
+ * would turn this endpoint into a mailer for anyone who ever obtained the secret, and the
+ * whole argument for the secret being an acceptable risk (see the header) is that its
+ * holder can do exactly two harmless things. Sending mail to strangers is not one of them.
+ */
+function verdictNotice_(payload) {
+  var subject = String(payload.subject || '').trim();
+  var body = String(payload.body || '').trim();
+  if (!subject || !body) {
+    return { ok: false, error: 'a verdict notice needs both a subject and a body' };
+  }
+  var actor = String(payload.actor_email || '').trim().toLowerCase();
+
+  var sent = 0;
+  for (var i = 0; i < CURATORS.length; i++) {
+    if (CURATORS[i].toLowerCase() === actor) {
+      continue;                     // nobody needs mail about their own click
+    }
+    GmailApp.sendEmail(CURATORS[i], subject, body, { name: 'MalAvi' });
+    sent += 1;
+  }
+  return { ok: true, action: 'emailed', notified: sent };
+}
+
+
 function declineNotice_(payload) {
   var to = String(payload.to || '');
   if (to.indexOf('@') === -1) {
@@ -472,15 +523,20 @@ function notifyCurators_(submissionId, written) {
     'Submission: ' + submissionId,
     'Report:     ' + written.url,
     '',
-    'The report opens in the browser. It carries the automated check results, what was',
-    'submitted, and a link that records your decision.',
+    // One line per paragraph, not hand-wrapped. A mail client re-wraps to its own
+    // width, so a sentence split across two source lines comes out broken at whatever
+    // word the author happened to stop at -- "...what was / submitted..." is what that
+    // looked like in the first real report email.
+    'The report opens in the browser. It carries the automated check results, what was '
+      + 'submitted, and a link that records your decision.',
+    '',
+    'Opening it needs the Google account the reports folder was shared with. If the link '
+      + 'says you need access, check which account your browser is signed into.',
     '',
     written.action === 'updated'
-      ? 'This replaces the earlier version at the same link. If you already read it, the'
+      ? 'This replaces the earlier version at the same link. If you already read it, the '
+        + 'findings may have changed.'
       : 'Nothing is added to MalAvi without a curator decision.',
-    written.action === 'updated'
-      ? 'findings may have changed.'
-      : '',
     '',
     'Confidential: a submission can contain unpublished sequences.'
   ];

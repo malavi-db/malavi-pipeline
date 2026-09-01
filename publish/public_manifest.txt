@@ -110,6 +110,12 @@ schemas/
 reference/
 backup/lifeboat.sh
 publish/push_site.sh
+
+# The narrow companion to push_site.sh: it publishes the three generated JSON feeds and
+# nothing else, which is what lets the review programs republish the public queue
+# automatically when a curator's decision changes it. Contains no ids or secrets -- the
+# token is read from a path, and the repository URL is the public site's.
+publish/push_feeds.sh
 publish/README.md
 publish/public_manifest.txt
 publish/push_pipeline.sh

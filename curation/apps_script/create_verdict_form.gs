@@ -325,10 +325,19 @@ function buildCorrectionPage(form) {
   // _parse_correction_approval gives for checking nothing: a check here would be a second
   // copy of a rule that has to hold at the write regardless of what reached it.
 
+  // "Be specific" is doing real work here, not being polite. Nothing parses this text --
+  // a program that guessed which cell a sentence meant would be inferring data from prose
+  // -- so a maintainer reads it and makes the change by hand. A correction that does not
+  // say which row and which field cannot be carried out without asking the curator again.
+  //
+  // The help text used to end "A maintainer applies this — you do not need to touch any
+  // files", which was true of the second clause and false of the first: nothing applied it
+  // at all, and the uncorrected value was published while every gate reported success.
   form.addParagraphTextItem()
       .setTitle('What should change?')
-      .setHelpText('Be specific: which row, which field, from what to what. A maintainer ' +
-                   'applies this — you do not need to touch any files.')
+      .setHelpText('Be specific: which row, which field, from what to what — a maintainer ' +
+                   'makes this change by hand, and can only do it if you say exactly ' +
+                   'what it is. You do not need to touch any files.')
       .setRequired(true);
 
   page.setGoToPage(FormApp.PageNavigationType.SUBMIT);
@@ -399,9 +408,17 @@ function buildCorrectionApprovalPage(form) {
                    'changing. Names or addresses, separated by commas.')
       .setRequired(true);
 
+  // NOT 'What was resolved?'. That is the title of the override page's question, and a
+  // question title becomes the response sheet's column header verbatim -- two questions
+  // sharing a title produce two columns sharing a name, and csv.DictReader keeps the last.
+  // This page's column therefore answered for the override page's, and a lead's required
+  // justification for clearing someone else's hold was stored empty. Renamed on the live
+  // form 2026-08-14; verdicts.COL_CONCLUDED is the matching constant. Keep every title on
+  // this form unique -- test_verdict_form_titles_are_unique enforces it here, and nothing
+  // can enforce it in Google.
   form.addParagraphTextItem()
-      .setTitle('What was resolved?')
-      .setHelpText('Optional. What the discussion concluded.')
+      .setTitle('What did the discussion conclude?')
+      .setHelpText('Optional.')
       .setRequired(false);
 
   page.setGoToPage(FormApp.PageNavigationType.SUBMIT);

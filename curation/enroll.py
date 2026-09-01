@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
-from malavi_curation import enrollment, ledger  # noqa: E402
+from malavi_curation import enrollment, ledger, public_feeds  # noqa: E402
 from malavi_curation.config import load_config, repo_root  # noqa: E402
 from malavi_curation.submission_id import load_ledger  # noqa: E402
 
@@ -39,6 +39,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would be enrolled; write nothing")
+    parser.add_argument("--no-publish", action="store_true",
+                        help="do not rebuild and publish the public queue afterwards")
     parser.add_argument("--track", default="A",
                         help="which intake track these arrived by (default A, the public "
                              "form)")
@@ -90,6 +92,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"\n{created} enrolled, {advanced} updated, {skipped} skipped.")
     if arguments.dry_run:
         print("[dry-run] nothing was written.")
+        return 0
+
+    # A newly enrolled submission is the moment it becomes visible on the public queue at
+    # all, so this is the state change a submitter is most likely to be watching for.
+    if (created or advanced) and not arguments.no_publish:
+        print("")
+        public_feeds.refresh()
     return 0
 
 

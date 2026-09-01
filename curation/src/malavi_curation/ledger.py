@@ -113,7 +113,9 @@ ALLOWED_TRANSITIONS: Dict[str, Tuple[str, ...]] = {
     "declined": ("in_review",),          # reopening requires a deliberate act, and is logged
     "released": (),                      # terminal: a published release is not un-published here
     "withdrawn": (),                     # terminal
-    "dormant": ("in_review", "ready_for_review", "withdrawn"),  # a late reply revives it
+    # A late reply revives it; `declined` is how a name is finally given back, now that
+    # going dormant no longer does that on its own.
+    "dormant": ("in_review", "ready_for_review", "withdrawn", "declined"),
 }
 
 # States a submission can be in while still plausibly heading for a release.
@@ -126,7 +128,8 @@ CLOSED_STATES = ("declined", "dormant")
 
 # The lifecycle of a reserved lineage name, tracked alongside the submission because the
 # two can diverge: a declined submission's names go back, an approved one's are confirmed
-# only when a release actually ships.
+# only when a release actually ships, and a dormant one goes on holding its claim
+# indefinitely.
 NAME_STATES = ("claimed", "held", "confirmed", "released")
 
 VERDICTS = ("approve", "hold", "decline")
@@ -159,6 +162,8 @@ DISPOSITION_REASON_CODES = (
     "superseded",                # replaced by another submission
     "released_in_build",         # included in a constructed release
     "reopened",                  # cleared on revival; kept so history reads sensibly
+    "objection_resolved",        # approved once the hold blocking it was cleared or
+                                 # retracted, on an approval that already stood
 )
 
 
@@ -735,6 +740,39 @@ def blocking_holds(entry: Entry) -> List[Verdict]:
     return [v for v in standing_positions(entry).values() if v.blocks]
 
 
+def hold_elapsed(stamp: str, config: Optional[Dict[str, Any]] = None,
+                 now: Optional[datetime] = None) -> Tuple[bool, str]:
+    """Has the publish hold run out since ``stamp``? With the reason if not.
+
+    Only the arithmetic, deliberately: *which* timestamp a caller measures from, and what
+    else must be true besides the clock, differ by caller and stay with the caller.
+    ``notify_submitters`` measures from the approval or from the decline; the public queue
+    measures from the approval only.
+
+    Two behaviors are worth keeping in one place rather than in each of them:
+
+    * the hours are read through :func:`_review_config`, which coerces to int and refuses
+      zero — a zero hold silently disables the wait a second curator relies on, and a
+      quoted ``"24"`` in YAML used to raise ``TypeError`` and kill the whole run;
+    * an unreadable timestamp fails **this one submission**, not the scan. The same bug
+      was fixed in :func:`due_actions` for the same reason: one bad value used to stop
+      every clock for every submission in the ledger until somebody noticed.
+    """
+    if not stamp:
+        return False, "carries no timestamp for when that happened"
+
+    hours = _review_config(config)["publish_hold_hours"]
+    try:
+        moment = now or datetime.now(timezone.utc)
+        waited = moment - _parse(stamp)
+    except (ValueError, TypeError) as exc:
+        return False, f"unreadable timestamp {stamp!r} ({exc})"
+
+    if waited < timedelta(hours=hours):
+        return False, f"hold has {timedelta(hours=hours) - waited} left to run"
+    return True, ""
+
+
 def approvals(entry: Entry) -> List[Verdict]:
     """Standing approvals **of the current revision**, excluding withdrawn ones."""
     return [v for v in current_verdicts(entry).values()
@@ -1168,9 +1206,9 @@ def bump_revision(entry: Entry, reason: str, at: Optional[str] = None,
 
     # An approval that was standing is now an approval of something that no longer exists.
     # New content is also the answer an awaiting_submitter was waiting for, so the 60-day
-    # clock stops — without that, a submitter who replied on day 59 could still have their
-    # reserved names released on day 60, the exact harm the timeout's config comment
-    # argues against.
+    # clock stops. Since 2026-08-20 the timeout no longer takes the names back, so this is
+    # no longer what stands between a day-59 reply and a lost reservation; it still matters,
+    # because a submission that has answered should not be reported as still waiting.
     #
     # Both moves are set directly rather than through transition(), because transition
     # would clear approved_at and rerun rules that have nothing to say about a resubmission.
@@ -1291,8 +1329,17 @@ def transition(entry: Entry, to_state: str, actor: str, at: Optional[str] = None
         entry.name_state = "held"
     elif to_state == "released":
         entry.name_state = "confirmed"
-    elif to_state in ("declined", "withdrawn", "dormant"):
+    elif to_state in ("declined", "withdrawn"):
         entry.name_state = "released"
+    # `dormant` is deliberately NOT in that list. A submission goes dormant because its
+    # submitter has not answered yet -- very often because a curator asked them to
+    # resequence, which is weeks of bench work, not an abandonment. Taking the name back at
+    # 60 days would hand NECMON01 to somebody else while the original submitter is doing
+    # exactly what we asked; if they had already put that name in a manuscript or a GenBank
+    # record, MalAvi would then hold two different sequences under one name, which is the
+    # single failure the reservation system exists to prevent. So a dormant submission keeps
+    # its claim indefinitely, and a name comes back only when somebody actively declines the
+    # submission. Decided with Staffan Bensch, 2026-08-20.
 
     # Reopening a finished submission has to undo the bookkeeping that finishing it did,
     # or the record contradicts itself: a live submission advertising reserved names while
@@ -1341,8 +1388,11 @@ def due_actions(entries: Dict[str, Entry], now: Optional[str] = None,
     * the **publish hold** — an approved submission becomes release-eligible once it has
       waited, and stops being eligible the moment an objection is recorded, however late in
       the window. That is what makes the wait real rather than ceremonial;
-    * the **awaiting-submitter timeout** — 60 days, after which the submission goes dormant
-      and its reserved names go back.
+    * the **awaiting-submitter timeout** — 60 days, after which the submission goes dormant.
+      Its reserved names are **kept**: dormancy means the submitter has not answered yet,
+      not that they have given up, and a name taken back while they are resequencing at our
+      request is a name that can end up on two different sequences. Declining is what
+      returns a name.
 
     Returning proposals rather than applying them is the rule that automation never
     resolves a disagreement. A caller applies these through :func:`transition`, which
@@ -1378,6 +1428,32 @@ def due_actions(entries: Dict[str, Entry], now: Optional[str] = None,
                                  f"{settings['publish_hold_hours']}h elapsed, no standing "
                                  f"objection")))
 
+            # An approval that outlived the objection against it. Clearing the last hold
+            # returns a submission to `in_review`; it does not look at what was already
+            # approved. So a submission whose only objection a lead has formally cleared,
+            # and which still carries a standing approval, sat in `in_review` with no
+            # clock on it at all -- the publish hold below only ever starts from
+            # `approved`. Nothing would have moved it again, and `stale_live` would have
+            # noticed days later, if anyone ran it.
+            #
+            # Reached the same way by a curator retracting their own hold.
+            #
+            # Proposed, not applied: `transition` re-checks every blocking rule at the
+            # moment of the write, so an objection recorded between this scan and that
+            # write still wins. What is not in question here is a disagreement -- the
+            # objection has been resolved on the record, by someone entitled to resolve
+            # it, and the approval was never withdrawn.
+            if entry.state == "in_review" and not entry.embargoed:
+                approvable, _why_not = is_approvable(entry)
+                standing = approvals(entry)
+                if approvable and standing and not blocking_holds(entry):
+                    who = ", ".join(sorted({v.curator for v in standing}))
+                    due.append(DueAction(
+                        submission_id=submission_id,
+                        action="approve",
+                        because=(f"approved by {who} and no objection stands; the hold "
+                                 f"that was blocking it has been resolved")))
+
             if (entry.state == "awaiting_submitter" and entry.awaiting_since
                     and not entry.embargoed):
                 waited = moment - _parse(entry.awaiting_since)
@@ -1387,7 +1463,7 @@ def due_actions(entries: Dict[str, Entry], now: Optional[str] = None,
                         action="timeout_dormant",
                         because=(f"waiting on the submitter since {entry.awaiting_since}, "
                                  f"past {settings['awaiting_submitter_timeout_days']} "
-                                 f"days; reserved names are released")))
+                                 f"days; its reserved names are KEPT")))
         except (ValueError, TypeError) as exc:
             due.append(DueAction(submission_id=submission_id, action="malformed",
                                  because=f"unreadable timestamp ({exc}); needs a maintainer"))

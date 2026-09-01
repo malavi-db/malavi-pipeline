@@ -618,8 +618,38 @@ def _r_checks(submission: Dict[str, Any], version: str) -> List[CheckResult]:
         (r.get("host_species") or ""): r.get("source") for r in records
     }
 
+    # A name that does not reconcile is reported as a possible misspelling or a
+    # non-avian host. For a name MalAvi itself already uses that is the wrong story and
+    # sends a curator hunting for a typo that is not there: the name is a real bird and
+    # a real MalAvi host, and what failed is the match against *current* eBird/clootl
+    # taxonomy -- almost always because the species has been moved to another genus.
+    # Grus leucogeranus (now Leucogeranus leucogeranus) is the case that showed this up.
+    #
+    # Which current name it moved to is not answerable from here: the clootl snapshot
+    # lives inside malaviR's sysdata and is not exported. So this says what it knows and
+    # stops, rather than guessing a genus.
+    try:
+        from .release_index import load_release_index      # noqa: PLC0415 - avoids a cycle
+        _known_hosts = load_release_index().hosts
+    except Exception:                                          # noqa: BLE001
+        _known_hosts = frozenset()
+
+    def _taxonomy_message(entry: Dict[str, Any]) -> str:
+        reason = entry.get("reason") or "did not resolve"
+        name = str(entry.get("host_species") or "").strip()
+        if entry.get("match_type") == "none" and name.upper() in _known_hosts:
+            return ("MalAvi already uses this host name, so it is neither a misspelling "
+                    "nor a non-avian host. What it does not match is current "
+                    "eBird/clootl taxonomy — most often because the species has been "
+                    "moved to a different genus since MalAvi recorded it. Check the "
+                    "current name before treating this as an error.")
+        if entry.get("match_type") == "none":
+            return (f"{reason} MalAvi does not hold this binomial either, and no "
+                    f"candidate spelling was found for it.")
+        return reason
+
     taxonomy = [Finding(subject=entry.get("host_species") or "?",
-                        message=entry.get("reason") or "did not resolve",
+                        message=_taxonomy_message(entry),
                         severity=Severity.WARNING,
                         source=source_for.get(entry.get("host_species") or ""))
                 for entry in result.get("host_taxonomy", []) if entry.get("flagged")]
@@ -687,17 +717,36 @@ def _r_checks(submission: Dict[str, Any], version: str) -> List[CheckResult]:
         # rather than independent evidence of anything. Putting the flags first would
         # present one fixable problem as nine alarming ones.
         explanation = entry.get("message")
-        detail = f" — {entry['flags']}" if entry.get("flags") else ""
-        message = (f"{explanation} (verdict: {call}; underlying flags:{detail or ' none'})"
-                   if explanation else f"{call}{detail}")
+        flags = str(entry.get("flags") or "").strip()
+        if explanation:
+            # malaviR's own sentence leads. What followed it used to be
+            # "(verdict: X; underlying flags: — a; b; c)" -- a stray dash left over from
+            # the no-explanation branch's separator, a raw call token, and nine
+            # underscore-joined codes, all inside one parenthesis at the end of a
+            # paragraph. The pieces are the same; they are just no longer crammed into an
+            # aside. _humanize turns the call and the codes into words.
+            message = explanation
+            if flags:
+                message += f" Verdict {call}, from: {flags}."
+            else:
+                message += f" Verdict {call}, with no underlying flags."
+        else:
+            message = f"{call}" + (f" — {flags}" if flags else "")
         sequence_findings.append(Finding(
             subject=str(entry.get("lineage_name") or "a sequence"),
             message=message,
             severity=Severity.WARNING,
             source=source_by_lineage.get(entry.get("lineage_name")),
+            # "call" is carried so the report can key the calls it actually shows,
+            # rather than re-deriving them by parsing the message it just built.
             evidence={key: entry.get(key) for key in
-                      ("score", "nearest_lineage", "nearest_distance", "n_mutations",
-                       "n_nonsynonymous", "n_stop_codons")},
+                      ("call", "score", "nearest_lineage", "nearest_distance",
+                       "n_mutations", "n_nonsynonymous", "n_stop_codons",
+                       # The per-window parentage behind a chimera call. Without it the
+                       # call is an assertion a curator cannot check.
+                       "chimera_parent_switches", "chimera_delta",
+                       "chimera_best_single", "chimera_best_single_distance",
+                       "chimera_runs")},
         ))
 
     results = [

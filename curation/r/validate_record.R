@@ -50,22 +50,56 @@ validate_records <- function(records, version = "latest") {
   host_names <- host_names[!is.na(host_names) & nzchar(host_names)]
 
   # --- Batch host-name reconciliation --------------------------------------
+  #
+  # Two malaviR interfaces answer this question and they do not agree. The function
+  # match_taxonomy() returns "none" for 173 of MalAvi's 2,339 host binomials; the shipped
+  # `taxonomy` dataset resolves every one of those 173 -- 169 as "reassigned:family", 1 as
+  # "reassigned:order", 3 as "legacy". The function carries the genus-level reassignment
+  # rule and not the family- or order-level ones that built the dataset.
+  #
+  # So the dataset is consulted for anything the function gives up on. Not instead of it:
+  # the dataset only covers host names already in a MalAvi release, and a submission's
+  # whole point is to bring names that are not. The function handles those; the dataset
+  # repairs the ones it wrongly rejects.
+  #
+  # Found 2026-08-19, when the first real submission reported Grus leucogeranus as a
+  # "possible misspelling or non-avian host". It is neither: it is a MalAvi host, and the
+  # dataset maps it to Leucogeranus leucogeranus. See
+  # malaviR/data-raw/TAXONOMY_CROSSWALK_GAPS.md.
+  shipped <- tryCatch(malaviR::taxonomy, error = function(e) NULL)
+
   host_tax <- list()
   if (length(host_names)) {
     key <- tryCatch(match_taxonomy(host_names, version = version)$key,
                     error = function(e) NULL)
     if (!is.null(key)) {
       host_tax <- lapply(seq_len(nrow(key)), function(i) {
-        mt <- key$match_type[i]
+        mt   <- key$match_type[i]
+        name <- key$malavi_species[i]
+        ebird <- key$ebird_species[i]
+        ord   <- key$order[i]
+        fam   <- key$family[i]
+
+        if (identical(mt, "none") && !is.null(shipped)) {
+          hit <- shipped[!is.na(shipped$malavi_species) &
+                           shipped$malavi_species == name, , drop = FALSE]
+          if (nrow(hit) && !is.na(hit$ebird_species[1])) {
+            ebird <- hit$ebird_species[1]
+            ord   <- hit$order[1]
+            fam   <- hit$family[1]
+            mt    <- hit$match_type[1]
+          }
+        }
+
         flagged <- mt %in% c("none", "generic")
         reason <- if (identical(mt, "none"))
           "Host name did not reconcile to avian taxonomy (possible misspelling or non-avian host)."
         else if (identical(mt, "generic"))
           "Only the host genus could be matched; species-level name unresolved."
         else NA_character_
-        list(host_species = key$malavi_species[i],
-             ebird_species = key$ebird_species[i],
-             order = key$order[i], family = key$family[i],
+        list(host_species = name,
+             ebird_species = ebird,
+             order = ord, family = fam,
              match_type = mt, flagged = flagged, reason = reason)
       })
     }
@@ -135,9 +169,13 @@ qc_sequences <- function(sequences, version = "latest") {
     label <- if (!is.null(s$lineage_name)) as.character(s$lineage_name) else NA_character_
     if (is.null(seq_text) || !nzchar(as.character(seq_text))) next
     entry <- tryCatch({
-      qc <- lineage_qc(as.character(seq_text), version = version)
+      # details = TRUE only so the chimera windows come back. The call itself is the
+      # same either way; without them a "possible_chimera" verdict reaches the curator
+      # as a bare assertion, and the evidence for it -- which stretch of the barcode
+      # matches which lineage -- is exactly what makes it judgable.
+      qc <- lineage_qc(as.character(seq_text), version = version, details = TRUE)
       summary_row <- as.list(qc$summary[1, , drop = FALSE])
-      list(lineage_name = label,
+      entry <- list(lineage_name = label,
            call = as.character(qc$call),
            score = as.numeric(qc$score),
            flags = paste(qc$flags, collapse = "; "),
@@ -147,6 +185,35 @@ qc_sequences <- function(sequences, version = "latest") {
            n_nonsynonymous = summary_row$n_nonsynonymous,
            n_stop_codons = summary_row$n_stop_codons,
            message = if (!is.null(qc$message)) as.character(qc$message) else NULL)
+
+      ch <- qc$chimera
+      if (!is.null(ch) && !is.null(ch$windows) && nrow(ch$windows)) {
+        w <- ch$windows
+        # Collapse consecutive windows with the same best match into runs. Nineteen
+        # overlapping window rows is the raw output; what a reader can hold is "this
+        # stretch looks like X, that stretch looks like Y".
+        runs <- list(); cur <- NULL
+        for (i in seq_len(nrow(w))) {
+          nm <- w$nearest_lineage[i]
+          if (is.null(cur) || !identical(nm, cur$lineage)) {
+            if (!is.null(cur)) runs[[length(runs) + 1]] <- cur
+            cur <- list(lineage = nm, start = w$window_start[i],
+                        end = w$window_end[i], dist = w$nearest_distance[i])
+          } else {
+            cur$end <- w$window_end[i]
+            cur$dist <- min(cur$dist, w$nearest_distance[i])
+          }
+        }
+        if (!is.null(cur)) runs[[length(runs) + 1]] <- cur
+        entry$chimera_parent_switches <- as.integer(ch$parent_switches)
+        entry$chimera_delta <- as.numeric(ch$chimera_delta)
+        entry$chimera_best_single <- as.character(ch$best_single_lineage)
+        entry$chimera_best_single_distance <- as.numeric(ch$best_single_distance)
+        entry$chimera_runs <- lapply(runs, function(r)
+          list(lineage = as.character(r$lineage), start = as.integer(r$start),
+               end = as.integer(r$end), distance = as.numeric(r$dist)))
+      }
+      entry
     }, error = function(e) {
       list(lineage_name = label,
            error = paste("lineage_qc failed:", conditionMessage(e)))

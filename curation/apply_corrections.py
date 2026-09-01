@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-# @title Apply curator corrections to a submission
-# @purpose Turn corrections a lead curator has approved into a new revision of the
-#   submission, so a curator's fix reaches the data without a curator touching a file.
-# @why A correction was capturable but not applicable: the form recorded what should
-#   change and who confirmed it, a lead approved it, and then a human had to edit a
-#   workbook by hand. That is the step where a correction gets forgotten, half-applied, or
-#   applied without the record of who authorized it.
+# @title Record the corrections a lead curator has approved
+# @purpose Turn each approved correction into a new revision of the submission, carrying
+#   what should change and on whose authority, and clearing the approvals that were given
+#   to the version before it.
+# @why A correction was capturable but not recordable: the form took what should change
+#   and who confirmed it, a lead approved it, and then it sat in the ledger with nothing
+#   acting on it -- no revision, no cleared approvals, no re-screen.
+# @why This records the decision; it does NOT edit any data. See "Where the change reaches
+#   the data" in the module docstring, and the follow-up this prints after every run.
 # @input curation/intake/submissions/review_ledger.json (via malavi_curation.ledger)
 # @input config/curators.yml (resolves the proposer's id back to an address)
 # @output a new revision recorded in the ledger, with the correction and its authority
@@ -41,6 +43,29 @@ every report is built from it, and rewriting it would destroy the only record of
 actually submitted. A correction is recorded *over* it as a new revision, so both the
 original and the corrected reading survive, which is what lets a curator years later see
 that a value was changed and on whose authority.
+
+**Where the change reaches the data — read this, because nothing here does it.** The
+correction is free text a curator typed. Nothing parses it, deliberately: a program that
+guessed which cell "the host is *Turdus merula*, not *T. migratorius*" meant would be
+inferring data from prose, which is the one thing this project does not do. So this
+program records *that* a change was authorized, and the change itself lands in one of two
+places, both of which need a person:
+
+* **The submitter sends a corrected workbook.** Their rows then arrive corrected at
+  ``ingest_submissions.py``, because ingest reads the workbook. This is the path for
+  anything only the submitter can settle.
+* **The maintainer corrects the store**, with ``correct_store.py``, *after* the submission
+  has been ingested. This is the path for a fix the curators settled between themselves —
+  a host synonym, a country spelling — where there is nothing to ask the submitter for.
+  It is a separate act because ``data/records/`` is where the rows exist at that point;
+  before ingest there is nothing to edit but the workbook, which stays untouched.
+
+Until 2026-08-14 neither was written down, and both the RUNBOOK and the verdict form said
+a maintainer applied the change automatically. The failure was silent and complete: the
+revision bumped, the report regenerated from the unchanged workbook and said exactly what
+it had said before, curators re-approved it, ingest wrote the uncorrected value, and every
+gate reported success. This program now prints the follow-up after every run and exits 3
+until somebody has done it.
 
 **Revisions clear approvals, deliberately.** Applying a correction bumps the revision,
 which clears every standing approval including from curators who were perfectly happy.
@@ -201,11 +226,15 @@ def main(argv=None) -> int:
             print("No corrections are waiting.")
             return 0
 
+        recorded: List[Tuple[Any, Any]] = []
         if work:
-            print(f"{len(work)} approved correction(s) to apply:")
+            print(f"{len(work)} approved correction(s) to record:")
             for entry, correction in work:
-                print(apply_correction(entry, correction, registry,
-                                       registry_path=curators_mod.registry_path()))
+                line = apply_correction(entry, correction, registry,
+                                        registry_path=curators_mod.registry_path())
+                print(line)
+                if correction.applied_at:
+                    recorded.append((entry, correction))
 
         if waiting:
             print(f"\n{len(waiting)} correction(s) not applied — no lead has approved them "
@@ -219,7 +248,47 @@ def main(argv=None) -> int:
 
     if work and not arguments.apply:
         print("\n[dry-run] nothing was written. Re-run with --apply to record these.")
+        return 0
+
+    if recorded:
+        print(still_to_do(recorded))
+        # 3, the project's "written, but a person still has to act" code. Zero would say
+        # the correction had been applied to something, which is exactly the thing this
+        # program spent a fortnight appearing to do.
+        return 3
     return 0
+
+
+def still_to_do(recorded: List[Tuple[Any, Any]]) -> str:
+    """The follow-up block, printed after corrections are recorded.
+
+    Spelled out per correction rather than as a general note, because the general note is
+    the one that gets skimmed. Whoever runs this has to leave holding a specific next
+    action for a specific submission.
+    """
+    lines = ["", "=" * 78,
+             "RECORDED, NOT YET IN THE DATA. Each correction below is authorized and its",
+             "approvals are cleared. No value has changed anywhere yet.",
+             "=" * 78, ""]
+    for entry, correction in recorded:
+        lines.append(f"{entry.submission_id}  {correction.id}")
+        lines.append(f"    change: {correction.change}")
+        lines.append("    then, ONE of:")
+        lines.append("      - the submitter sends a corrected workbook, and you re-screen")
+        lines.append("        and re-ingest it (the correction arrives with their rows); or")
+        lines.append("      - after this submission is ingested, correct the store:")
+        lines.append("          .venv/bin/python curation/correct_store.py \\")
+        lines.append("              --table <host_records|lineages|...> \\")
+        lines.append("              --record <RECORD_ID>  # or --site / --where \\")
+        lines.append("              --set COLUMN=VALUE \\")
+        lines.append(f'              --reason "{correction.id}: '
+                     f'{correction.change[:60]}" \\')
+        lines.append("              --apply")
+        lines.append("")
+    lines.append("Neither happens on its own. Ingest reads the submitted workbook, which is")
+    lines.append("deliberately never edited, so a correction nobody carries across is lost")
+    lines.append("silently -- the re-screened report will say what it said before.")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

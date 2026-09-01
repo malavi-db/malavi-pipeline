@@ -499,6 +499,37 @@ def test_awaiting_submitter_times_out_after_sixty_days(registry):
 
     transition(entry, "dormant", "promoter", at="2026-03-03T00:00:00+00:00",
                reason="submitter_unresponsive")
+    # CHANGED 2026-08-20: the timeout no longer takes the name back. Dormancy records that
+    # we have stopped expecting a prompt answer, not that the submitter forfeited their
+    # claim -- most often they are away resequencing because a curator asked them to.
+    assert entry.name_state == "claimed"
+
+
+def test_dormancy_does_not_release_a_reservation(registry):
+    """The rule a resequencing submitter depends on.
+
+    A curator rejects a sequence for an indel and asks for it to be re-read. That is bench
+    work; it can easily outrun a 60-day clock. If the clock took NECMON01 back and somebody
+    else were issued it, MalAvi would end up holding two different sequences under one name
+    -- and the submitter, who was doing exactly what we asked, would be the one penalized.
+    Only a decline returns a name now.
+    """
+    entries = {}
+    entry = ensure_entry(entries, "MALAVI-SUB-2026-000033", "A",
+                         "2026-01-01T00:00:00+00:00")
+    entry.reserved_names = ["NECMON01"]
+    transition(entry, "ready_for_review", "intake")
+    transition(entry, "awaiting_submitter", "alice")
+    assert entry.name_state == "claimed"
+
+    transition(entry, "dormant", "promoter", reason="submitter_unresponsive")
+    assert entry.state == "dormant"
+    assert entry.name_state == "claimed"
+    assert entry.reserved_names == ["NECMON01"]
+
+    # And the escape hatch: declining is what finally gives it back, so a name is not
+    # locked away forever by a submission nobody will ever hear about again.
+    transition(entry, "declined", "lead", reason="data_not_verifiable")
     assert entry.name_state == "released"
 
 
@@ -521,7 +552,9 @@ def test_a_dormant_submission_can_be_revived_and_reclaims_its_names(registry):
     transition(entry, "ready_for_review", "intake")
     transition(entry, "awaiting_submitter", "alice")
     transition(entry, "dormant", "promoter", reason="submitter_unresponsive")
-    assert entry.name_state == "released"
+    # Held throughout, not released and re-granted: see
+    # test_dormancy_does_not_release_a_reservation.
+    assert entry.name_state == "claimed"
     transition(entry, "in_review", "alice", reason="reopened")
     assert entry.state == "in_review"
     assert entry.name_state == "claimed"

@@ -31,7 +31,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from . import normalize, reference_names, template_adapter
+from . import normalize, reference_names, sequence_check, template_adapter
 from .release_store import TABLES, TableSpec, record_id, row_key
 
 # The columns the template supplies directly, as {store column: template column}. Kept as
@@ -666,9 +666,16 @@ def lineage_rows(workbook, submission_id: str, release: str
     sequences: Dict[str, str] = {}
     for _n, values in seq_body:
         name = lineage_cell(seq_header, values, "LINEAGE_NAME")
-        sequence = (template_adapter.cell(seq_header, values, "SEQUENCE") or "").strip()
-        if name and sequence:
-            sequences.setdefault(name, sequence.replace(" ", "").upper())
+        # normalize.sequence_pair, not a local clean-up. This read `.replace(" ", "")`
+        # until 2026-08-20, which removes spaces and nothing else -- and submitters paste
+        # sequences wrapped across lines. NECMON01 arrived with six newlines in the cell,
+        # so ingest would have written 485 characters *including literal newlines* into a
+        # CSV column and then into a FASTA record, and reported the lineage as "485 bp".
+        # The adapter had always cleaned this correctly; ingest rolled its own weaker copy.
+        _submitted, cleaned = normalize.sequence_pair(
+            template_adapter.cell(seq_header, values, "SEQUENCE"))
+        if name and cleaned:
+            sequences.setdefault(name, cleaned)
 
     columns = TABLES["lineages"].columns
     rows, notes = [], []
@@ -691,11 +698,23 @@ def lineage_rows(workbook, submission_id: str, release: str
                 f"NewLineages row {row_number}: {name} lists {len(accessions)} "
                 f"accessions ({', '.join(accessions)}); every lineage in MalAvi has one, "
                 f"so a curator should pick the representative")
-        if sequence and len(sequence) != MALAVI_WINDOW:
+        # A partial barcode is the common case (3,340 of 5,368 stored lineages), and
+        # place_sequences pads it into the window on the way in. So this reports what will
+        # happen rather than demanding a decision -- it used to say "this needs trimming or
+        # a curator's decision", which was alarming and wrong for a perfectly good
+        # forward-primer-only read. A sequence that genuinely does not fit is refused by
+        # misframed_sequences instead, which is a refusal and not a note.
+        if sequence and len(sequence) < MALAVI_WINDOW:
             notes.append(
-                f"NewLineages row {row_number}: {name} is {len(sequence)} bp; every "
-                f"lineage in MalAvi is exactly {MALAVI_WINDOW} bp (the cytochrome b "
-                f"barcode window), so this needs trimming or a curator's decision")
+                f"NewLineages row {row_number}: {name} is {len(sequence)} bp, shorter than "
+                f"the {MALAVI_WINDOW} bp barcode window; it will be padded into the window "
+                f"and stored like the {PARTIAL_LINEAGES_NOTE} lineages MalAvi already holds "
+                f"that cover only part of it")
+        elif sequence and len(sequence) > MALAVI_WINDOW:
+            notes.append(
+                f"NewLineages row {row_number}: {name} is {len(sequence)} bp, longer than "
+                f"the {MALAVI_WINDOW} bp barcode window; a curator has to decide how it is "
+                f"trimmed")
         row = {column: "" for column in columns}
         row["LINEAGE_NAME"] = name
         row["GENBANK_ACC"] = ", ".join(accessions)
@@ -963,3 +982,178 @@ def tables_from_workbook(path: Path, submission_id: str, release: str,
         tables[name] = rows
         notes.extend(table_notes)
     return tables, notes
+
+
+# What MalAvi pads a partial sequence with. The store holds 79,500 "-" against 800 "N", and
+# 3,340 of its 5,368 lineages carry fewer than 479 unambiguous bases -- a partial barcode is
+# the common case, not an exception. sequence_check._place pads with N because it builds a
+# sequence for *display* in the curator report; what goes into the store follows the store.
+STORE_GAP = "-"
+
+# How many stored lineages cover only part of the window, for a note that tells a submitter
+# their partial sequence is ordinary rather than a problem. Measured 2026-08-20.
+PARTIAL_LINEAGES_NOTE = "3,340"
+
+
+def _ingest_reference(store: Dict[str, List[Dict[str, Any]]],
+                      submission_id: str) -> Optional[Any]:
+    """A registration reference built from the record store, or None if it is empty.
+
+    Every lineage MalAvi holds occupies the 479 bp window at offset 0 by construction, so
+    the store is itself a valid reference. Using it means ingest gains no dependency on the
+    exported alignment file, which may be stale or absent when a submission is ingested. The
+    submission's own rows are excluded, so a re-ingest does not register against the copy of
+    itself it is about to replace.
+    """
+    held = [str(row.get("SEQUENCE") or "").strip().upper()
+            for row in store.get("lineages", [])
+            if str(row.get("_source") or "").strip() != submission_id]
+    held = [s for s in held if len(s) == MALAVI_WINDOW]
+    if not held:
+        return None
+    return sequence_check.Reference.from_sequences(
+        [f"ref{i}" for i in range(len(held))], held, where="the record store")
+
+
+def _placement(sequence: str, reference: Any) -> Tuple[Optional[int], int, int]:
+    """Where `sequence` sits in the window: ``(offset, bases lost at 5', at 3')``.
+
+    ``offset`` is None when it could not be placed at all. The two counts are how many
+    *real* bases placing it would throw away -- which is the thing that distinguishes a
+    partial barcode from a mis-trimmed one, and it does not depend on length.
+    """
+    # The default slide is +/-25, which suits a full-window barcode that is a base or two
+    # out. A partial read legitimately starts much further in: a reverse-primer-only read
+    # covering the last 250 bp begins at window position 230, and with the default bound it
+    # came back "could not be placed at all" -- refusing a perfectly good submission. So the
+    # bound allows any placement in which the sequence still fits inside the window, plus
+    # the usual margin for one that does not. lineage_resolve widens it for the same reason.
+    max_offset = max(sequence_check.MAX_OFFSET,
+                     MALAVI_WINDOW - len(sequence) + sequence_check.MAX_OFFSET)
+    offset, _mismatch = sequence_check._register(sequence, reference,
+                                                 max_offset=max_offset)
+    if offset is None:
+        return None, 0, 0
+    lost_start = -offset if offset < 0 else 0
+    lost_end = max(0, max(offset, 0) + len(sequence) - lost_start - MALAVI_WINDOW)
+    return offset, lost_start, lost_end
+
+
+def misframed_sequences(store: Dict[str, List[Dict[str, Any]]],
+                        incoming: Sequence[Dict[str, Any]],
+                        submission_id: str) -> List[str]:
+    """New lineages whose sequence cannot be placed without losing data. One message each.
+
+    A non-empty result means the submission must not be written, for the same reason a name
+    collision must not: the row would be wrong in a way nothing downstream could detect.
+
+    **Short sequences are normal and are NOT refused.** 3,340 of MalAvi's 5,368 lineages
+    hold fewer than 479 unambiguous bases -- ``ABSUP01`` has 326 real bases behind 153
+    leading gaps. Sequencing with the forward primer only, or a read that failed at one end,
+    produces a perfectly good partial barcode. It is padded into the window and stored.
+
+    **What is refused is losing real bases.** NECMON01 (MALAVI-SUB-2026-000006, 2026-08-20)
+    was *exactly* 479 bp and still wrong: it began at frame position 3, so it carried two
+    bases past the end of the window, and placing it would have discarded them. The length
+    check inside ``lineage_rows`` passed it in silence, and it would have entered the
+    alignment two bases out of frame -- 39% identity to its own clade instead of 92%.
+
+    A partial barcode fits inside the window and loses nothing; a mis-trimmed or
+    over-length one does not fit and something has to be thrown away. That is the real
+    distinction, and unlike a length or a fixed set of shapes it holds for any read.
+
+    An earlier version of this tested membership of ``sequence_check.CANONICAL_SHAPES``,
+    which would have refused every partial submission -- the majority of them. The same
+    mistake in a stricter form is recorded at the ``canonical`` branch of
+    ``sequence_check.check_sequence``.
+
+    **It refuses rather than silently trimming.** The same 2-base shift is produced by a
+    mis-windowed read (harmless -- re-place it) and by an indel near the 5' end (a
+    sequencing error -- re-read it). A program that quietly trimmed the overhang would
+    settle that question by itself and hide the second case.
+    """
+    reference = _ingest_reference(store, submission_id)
+    if reference is None:
+        # An empty store is a legitimate state (a fresh seed) and there is nothing to
+        # register against; refusing every sequence would be worse than not checking.
+        return []
+
+    messages: List[str] = []
+    for row in incoming:
+        name = normalize.lineage_name(row.get("LINEAGE_NAME")) or ""
+        sequence = str(row.get("SEQUENCE") or "").strip().upper()
+        if not name or not sequence:
+            continue
+        offset, lost_start, lost_end = _placement(sequence, reference)
+        if offset is None:
+            messages.append(
+                f"{name}: the sequence could not be placed against MalAvi's reading frame "
+                f"at all. It may not be avian haemosporidian cytochrome b, or it may be "
+                f"reverse-complemented. A curator has to look at it.")
+        elif lost_start or lost_end:
+            lost = " and ".join(
+                part for part in (
+                    f"{lost_start} base(s) at the 5' end" if lost_start else "",
+                    f"{lost_end} base(s) at the 3' end" if lost_end else "") if part)
+            # A negative offset means the sequence starts before the window -- untrimmed
+            # primer or adapter at the 5' end. "frame position -19" is not a sentence
+            # anyone can act on, so describe the overhang instead.
+            where = (f"placed at frame position {offset + 1}" if offset >= 0
+                     else f"starting {-offset} base(s) before the window begins")
+            messages.append(
+                f"{name}: {len(sequence)} bp {where} does not fit the {MALAVI_WINDOW} bp "
+                f"barcode window -- storing it would discard {lost}. A partial sequence is "
+                f"fine and is padded into the window; this one is mis-trimmed or is a "
+                f"longer amplicon. Either the submitter re-windows it, or a curator decides "
+                f"the shift is an indel and asks for the sequence to be re-read; the "
+                f"screening report shows both readings.")
+    return messages
+
+
+def place_sequences(incoming: Sequence[Dict[str, Any]],
+                    store: Dict[str, List[Dict[str, Any]]],
+                    submission_id: str
+                    ) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Pad each new lineage's sequence into the 479 bp window. Returns (rows, notes).
+
+    Run **after** :func:`misframed_sequences` has refused anything that does not fit, so
+    every sequence reaching here sits inside the window and padding it is arithmetic rather
+    than judgment: ``offset`` gaps in front, gaps behind, nothing discarded.
+
+    Without this a primer-trimmed haem amplicon would be stored at 478 bp, and a
+    forward-primer-only read at whatever length it happened to be, in a table where all
+    5,368 existing rows are exactly 479 characters wide. Nothing downstream expects a short
+    row: the alignment would be ragged, and every distance computed against that lineage
+    would be measured over a different set of columns from every other one.
+
+    Padding uses :data:`STORE_GAP`, matching the store, so a partial submission is
+    indistinguishable from the 3,340 partial lineages MalAvi already holds.
+
+    The workbook is not touched. What the submitter sent stays exactly what they sent --
+    this pads the copy on its way into the store, and says so in a note.
+    """
+    reference = _ingest_reference(store, submission_id)
+    if reference is None:
+        return list(incoming), []
+
+    rows: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    for row in incoming:
+        row = dict(row)
+        name = normalize.lineage_name(row.get("LINEAGE_NAME")) or ""
+        sequence = str(row.get("SEQUENCE") or "").strip().upper()
+        if name and sequence:
+            offset, lost_start, lost_end = _placement(sequence, reference)
+            if offset is not None and not lost_start and not lost_end:
+                placed = STORE_GAP * offset + sequence
+                placed += STORE_GAP * (MALAVI_WINDOW - len(placed))
+                if placed != sequence:
+                    notes.append(
+                        f"{name}: {len(sequence)} bp padded into the {MALAVI_WINDOW} bp "
+                        f"window at frame position {offset + 1} "
+                        f"({sequence_check._assay_of(offset, len(sequence))}); "
+                        f"{offset} gap(s) before, {MALAVI_WINDOW - offset - len(sequence)} "
+                        f"after. No base was discarded and the workbook is unchanged.")
+                row["SEQUENCE"] = placed
+        rows.append(row)
+    return rows, notes

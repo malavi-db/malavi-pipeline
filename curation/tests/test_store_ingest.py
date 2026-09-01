@@ -4,6 +4,8 @@ The store had one writer, release_seed, so nothing could add to MalAvi after it 
 seeded. These cover the mapping that closes that: what the template supplies directly,
 what is derived and from where, and what is deliberately left blank rather than guessed.
 """
+import random
+
 import pytest
 
 openpyxl = pytest.importorskip("openpyxl")
@@ -711,3 +713,149 @@ def test_the_workbook_reader_normalizes_every_lineage_name(tmp_path):
     assert tables["lineages"][0]["LINEAGE_NAME"] == "SGS1"
     # And the sequence still joins, though the two sheets spelled the name differently.
     assert tables["lineages"][0]["SEQUENCE"] == WINDOW
+
+
+# --------------------------------------------------------------- reading frame at ingest
+#
+# The gap NECMON01 exposed on 2026-08-20: lineage_rows copies the SEQUENCE cell straight
+# out of the workbook, and its only sequence check is the length. NECMON01 was exactly
+# 479 bp and still two bases out of the barcode window, so it passed in silence and would
+# have entered the alignment shifted -- 39% identity to its own clade instead of 92%.
+#
+# The rule is NOT a length and NOT a fixed set of shapes. 3,340 of MalAvi's 5,368 lineages
+# hold fewer than 479 unambiguous bases: sequencing with one primer produces a perfectly
+# good partial barcode, which is padded into the window. What is refused is a placement
+# that would DISCARD real bases.
+
+# A 479 bp stand-in for a barcode: deterministic, but genuinely aperiodic.
+#
+# Two earlier versions of this constant were wrong in ways that quietly disabled the tests
+# using it. "A" * 479 is a homopolymer, which aligns equally well at every offset, so
+# registration ties broke arbitrarily. A short arithmetic formula looked random but was
+# periodic, so a 300 bp slice of it matched convincingly at a spurious offset 132 bases
+# away. A seeded PRNG has neither problem: every slice registers at exactly one offset.
+_RNG = random.Random(20260820)
+_WINDOW = "".join(_RNG.choice("ACGT") for _ in range(479))
+
+
+def _store_holding(sequence=_WINDOW):
+    return {"lineages": [{"LINEAGE_NAME": "TUMIG19", "SEQUENCE": sequence,
+                          "_source": "seed"}]}
+
+
+def _incoming(sequence, name="NEWLIN01"):
+    return [{"LINEAGE_NAME": name, "SEQUENCE": sequence}]
+
+
+def _refusals(sequence):
+    return store_ingest.misframed_sequences(_store_holding(), _incoming(sequence), "SUB")
+
+
+def _stored(sequence):
+    rows, notes = store_ingest.place_sequences(
+        _incoming(sequence), _store_holding(), "SUB")
+    return rows[0]["SEQUENCE"], notes
+
+
+def test_a_sequence_already_filling_the_window_is_accepted_unchanged():
+    assert _refusals(_WINDOW) == []
+    stored, notes = _stored(_WINDOW)
+    assert stored == _WINDOW and notes == []
+
+
+def test_placing_that_would_discard_real_bases_is_refused():
+    """NECMON01's exact shape: 479 bp, but beginning two bases INTO the window.
+
+    Trimmed two bases late at the 5' end, so it carries two bases past the window at the
+    3' end and is still 479 bp long -- the right length, the wrong window.
+    """
+    shifted = _WINDOW[2:] + "AC"
+    assert len(shifted) == 479
+    messages = _refusals(shifted)
+    assert len(messages) == 1
+    assert "would discard 2 base(s) at the 3' end" in messages[0]
+
+
+def test_a_sequence_starting_before_the_window_is_described_readably():
+    """Untrimmed primer at the 5' end. A negative offset must not print as position -19."""
+    messages = _refusals("ACGTTGCAACGTTGCAACGT" + _WINDOW)
+    assert len(messages) == 1
+    assert "20 base(s) before the window begins" in messages[0]
+    assert "position -" not in messages[0]
+
+
+def test_a_sequence_that_cannot_be_placed_at_all_is_refused():
+    """Not a haemosporidian barcode, or reverse-complemented. Not ours to guess at."""
+    messages = _refusals("ACGT" * 80)
+    assert len(messages) == 1
+    assert "could not be placed" in messages[0]
+
+
+# ------------------------------------------------ partial reads are normal, not a fault
+
+def test_a_primer_trimmed_haem_amplicon_is_padded_not_refused():
+    """478 bp at frame position 2 is the haem shape."""
+    haem = _WINDOW[1:]
+    assert _refusals(haem) == []
+    stored, notes = _stored(haem)
+    assert stored == "-" + haem and len(stored) == 479
+    assert len(notes) == 1 and "haem" in notes[0]
+
+
+def test_a_primer_trimmed_leuc_amplicon_is_padded_not_refused():
+    leuc = _WINDOW[1:477]
+    assert _refusals(leuc) == []
+    stored, _ = _stored(leuc)
+    assert len(stored) == 479 and stored.startswith("-") and stored.endswith("--")
+
+
+def test_a_forward_primer_only_read_is_padded_not_refused():
+    """REGRESSION: sequencing with one primer is common and must not be refused.
+
+    An earlier version tested membership of sequence_check.CANONICAL_SHAPES, which would
+    have refused this and every other partial submission -- the majority of them.
+    """
+    forward = _WINDOW[:300]
+    assert _refusals(forward) == []
+    stored, _ = _stored(forward)
+    assert stored == forward + "-" * 179
+
+
+def test_a_reverse_only_read_far_into_the_window_is_padded_not_refused():
+    """REGRESSION: _register slides only +/-25 by default, so this came back unplaceable.
+
+    A read covering the last 250 bp begins at window position 230, well past the default
+    bound. The bound has to admit any placement in which the sequence still fits.
+    """
+    reverse = _WINDOW[229:]
+    assert _refusals(reverse) == []
+    stored, _ = _stored(reverse)
+    assert stored == "-" * 229 + reverse and len(stored) == 479
+
+
+def test_a_very_short_read_from_the_middle_is_padded_not_refused():
+    middle = _WINDOW[200:260]
+    assert _refusals(middle) == []
+    stored, _ = _stored(middle)
+    assert stored == "-" * 200 + middle + "-" * 219
+
+
+def test_padding_uses_the_gap_character_the_store_uses():
+    """The store holds 79,500 "-" against 800 "N"; a padded submission must look the same."""
+    stored, _ = _stored(_WINDOW[:300])
+    assert "N" not in stored
+    assert stored.count("-") == 179
+
+
+# ---------------------------------------------------------------------- edge conditions
+
+def test_an_empty_store_checks_nothing():
+    """A fresh seed has nothing to register against; refusing everything would be worse."""
+    assert store_ingest.misframed_sequences({"lineages": []}, _incoming(_WINDOW), "SUB") == []
+
+
+def test_a_reingest_does_not_register_against_its_own_previous_rows():
+    """The submission's own rows are excluded, as they are for the collision check."""
+    store = {"lineages": [{"LINEAGE_NAME": "NEWLIN01", "SEQUENCE": _WINDOW,
+                           "_source": "SUB"}]}
+    assert store_ingest.misframed_sequences(store, _incoming(_WINDOW), "SUB") == []

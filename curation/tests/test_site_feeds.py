@@ -39,7 +39,7 @@ def test_an_opaque_id_is_allowed():
 def test_the_intake_directory_name_is_refused():
     """The exact leak that was live: a directory named after the submitter."""
     with pytest.raises(SystemExit, match="not an opaque identifier"):
-        _refuse_to_leak(queue(id="20260727T233146_Vincenzo_Ellis"))
+        _refuse_to_leak(queue(id="20260727T233146_A_Person"))
 
 
 def test_any_non_opaque_id_is_refused():

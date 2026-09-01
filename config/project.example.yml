@@ -113,6 +113,22 @@ submissions:
   # were added by hand, 2026-08-06. The fetcher does not need them -- it reads
   # file ids straight out of the response row -- but a curator inspecting a
   # submission by hand does, and so does anyone auditing where uploads land.
+  #
+  # WHO CAN OPEN THESE (settled 2026-08-19, after a curator found the links in the
+  # arrival email unopenable -- the ids were recorded here from the start but the
+  # folders had never been shared with anybody).
+  #
+  # Viewer for each *appointed* curator; General access Restricted; never
+  # link-shared. The arrival email lists the submitter's uploads by link, so a
+  # curator who cannot open them is being shown a door with no key.
+  #
+  # NOT shared with someone helping test the machinery. These two folders hold
+  # every submission ever uploaded, including unpublished sequences belonging to
+  # people who are not party to the test, and that is a wider grant than a tester
+  # needs -- they can read the curator report, which is the artifact review is
+  # actually done from. Eloisa Sari is deliberately excluded on that basis; see
+  # the note beside her entry in config/curators.yml. When a tester becomes an
+  # appointed curator, this is one of the things to grant.
   template_folder: ""
   materials_folder: ""
 
@@ -136,6 +152,12 @@ submissions:
   #
   # Each entry is a submission directory name under inbox_dir.
   exclude:
+    - id: 
+      reason: "The Shimizu 2026 vulture paper, submitted 2026-07-27 with the note
+        'test' and never reviewed. Withdrawn 2026-08-20 and excluded so the workbook can
+        be submitted again, live, as a demonstration -- excluding it is what frees
+        NECMON01 and NECMON02 for the resubmission to claim. The withdrawal is in the
+        ledger; this only keeps the directory out of the feeds and out of enroll."
     - id: 
       reason: "Test submission while building the form; Gupta worked example, no real data."
     - id: 
@@ -221,14 +243,37 @@ review:
   verdict_form_entries:
     submission_id: 1106066870
     revision: 1976575123
+    # The remaining text questions, read off the live form 2026-08-20 with
+    # showAllPrefillEntryIds. Recorded so a notification can hand a curator a link with
+    # the identifier already in it: copying a verdict id out of an email is the step that
+    # gets mistyped, and a mistyped id files an answer against something that does not
+    # exist. Only hold_id is used so far.
+    #
+    # These move whenever a question is deleted and re-created rather than renamed --
+    # which has happened once already (see step 6b in NEXT_STEPS.md). Re-read them after
+    # any hand edit to the form.
+    hold_id: 227246214            # "Which hold are you clearing?"        (override)
+    consulted: 516222350          # "Who did you consult?"                (override)
+    confirmed_by: 286409457       # "Who confirmed it?"
+    withdraw_flag_id: 1700816734  # "Which flag are you withdrawing?"     (retraction)
+    correction_id: 1731711003     # "Which correction are you approving?"
+    discussed_with: 272486221     # "Who did you discuss it with?"
 
-  # WHERE VERDICTS LAND. **Access is deliberately unresolved — see the note in
-  # curation/apps_script/README.md.** Unlike the submission responses sheet, this
-  # one must NOT be shared with "anyone with the link": verdict reason text quotes
-  # what was wrong with somebody's unpublished data, and curator identities sit
-  # beside it. That means the fetch job cannot read it the credential-free way
-  # fetch_submissions.py reads the submission sheet, and how it does read it is a
-  # decision that has not been made yet.
+  # WHERE VERDICTS LAND. Unlike the submission responses sheet, this one must NOT be
+  # shared with "anyone with the link": verdict reason text quotes what was wrong with
+  # somebody's unpublished data, and curator identities sit beside it. So the fetch job
+  # cannot read it the credential-free way fetch_submissions.py reads the submission sheet.
+  #
+  # SETTLED 2026-08-14. The sheet is shared **Viewer with the service account only**
+  # (malavi-fetcher@..., the address fetch_verdicts.py prints when it is refused), with
+  # General access left on Restricted. That is not link sharing: exactly one non-human
+  # principal can read it, it holds no write access, and the same arrangement is what
+  # curation/GOOGLE_ACCESS.md sets up for the submissions side.
+  #
+  # It had never been done. Drive answered 404 -- not 403 -- because an unshared file is
+  # invisible rather than forbidden, so the failure read like a wrong sheet id. Every
+  # rehearsal until then had used `fetch_verdicts.py --from-csv` against a local export,
+  # which meant the Google path had never once run.
   verdict_sheet: ""
 
   # The responses sheet is set to **GMT, no daylight saving (UTC+00:00)**, chosen

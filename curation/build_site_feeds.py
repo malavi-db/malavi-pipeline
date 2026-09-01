@@ -126,6 +126,53 @@ PUBLIC_STATUS = {
 DROPPED_STATES = ("declined", "dormant", "withdrawn", "released")
 
 
+def public_review_state(entry, config: Optional[Dict] = None,
+                        now=None) -> str:
+    """The state the public queue should treat this entry as having.
+
+    One rule, and it is the same rule ``notify_submitters`` applies before telling a
+    submitter their names are confirmed: **an approval is not public until the publish
+    hold has run out.**
+
+    The hold exists so a second curator can still object after an approval. A queue that
+    said "Accepted" the moment a curator clicked would have to walk it back to "Under
+    review" when a late hold landed -- on a public page, in front of the submitter, with
+    no explanation available, because the queue is deliberately not allowed to say that a
+    submission was questioned. The whole point of the lossy mapping below is that nobody
+    outside can tell a held submission from one that arrived this morning; publishing an
+    approval early is the one thing that would break that, by making the *retraction*
+    legible even though the hold itself is not.
+
+    So an approved submission still inside its hold reads as ``in_review``: true, since a
+    curator may still act, and indistinguishable from every other submission in review.
+
+    Embargo is deliberately not consulted. An embargoed submission has genuinely been
+    accepted -- what the embargo withholds is its records from a release, not the fact of
+    the decision -- and reporting it as still under review would be false rather than
+    merely uninformative.
+    """
+    if entry.state != "approved":
+        return entry.state
+
+    # A hold recorded late in the window still wins, exactly as it does for release
+    # eligibility and for the submitter's confirmation email.
+    if ledger_module().blocking_holds(entry):
+        return "in_review"
+
+    elapsed, _why_not = ledger_module().hold_elapsed(entry.approved_at, config, now)
+    return "approved" if elapsed else "in_review"
+
+
+def ledger_module():
+    """The ledger, imported late so a missing or unreadable one is never fatal here.
+
+    This program reports what curators decided; it must still build the contributor board
+    if the ledger cannot be read at all. See the caller in ``main`` for that fallback.
+    """
+    from malavi_curation import ledger as _ledger  # noqa: E402
+    return _ledger
+
+
 def public_status(review_state: Optional[str],
                   screened: bool, has_errors: bool) -> Optional[tuple]:
     """(label, pill) for the public queue, or None to leave the submission off it.
@@ -309,11 +356,14 @@ def main(argv=None) -> int:
     # decided and never touches a decision. A missing or unreadable ledger is not fatal --
     # the queue then falls back to what screening knows, which is what it did before the
     # ledger existed.
+    # Read through public_review_state, not off entry.state: an approval inside its
+    # publish hold is not public yet. See that function for why.
     review_states: Dict[str, str] = {}
     try:
-        from malavi_curation import ledger as _ledger  # noqa: E402
+        _ledger = ledger_module()
         with _ledger.open_ledger(inbox, write=False) as _entries:
-            review_states = {sid: entry.state for sid, entry in _entries.items()}
+            review_states = {sid: public_review_state(entry, cfg)
+                             for sid, entry in _entries.items()}
     except Exception as exc:                                    # noqa: BLE001
         print(f"NOTE: could not read the review ledger ({exc}); "
               f"queue status falls back to the screen result.")

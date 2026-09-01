@@ -478,6 +478,54 @@
         "additionalProperties": false
       }
     },
+    "alternative_names": {
+      "type": "array",
+      "description": "The template's Alt_Lineage_names sheet: lineages MalAvi already holds that the submitter published under a different name. Not a proposal for a new lineage -- it is a claim about MalAvi's existing data, and accepting one makes two names refer to one lineage for every future reader, so it is carried through to the curator report rather than being inferred later from the workbook.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "malavi_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name MalAvi already uses for this lineage."
+          },
+          "alternative_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name the submitter published it under."
+          },
+          "accessions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source": {
+            "type": "object",
+            "properties": {
+              "sheet": {
+                "type": "string"
+              },
+              "row": {
+                "type": "number"
+              },
+              "file": {
+                "type": "string"
+              },
+              "table": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "provenance": {
       "type": "object",
       "description": "How this submission was produced (set by the curation helper, blank for manual issue submissions).",

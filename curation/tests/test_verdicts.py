@@ -355,3 +355,43 @@ def test_the_apps_script_offers_exactly_the_reasons_python_parses():
 
     action_line = re.search(r"var ACTION_CLOSE = '([^']+)';", script)
     assert action_line and action_line.group(1) == verdicts.ACTION_CLOSE
+
+
+def test_no_two_questions_on_the_verdict_form_share_a_title():
+    """Two questions with one title become two sheet columns with one name.
+
+    Google writes a question title verbatim as the response sheet's column header, and
+    csv.DictReader keeps the LAST column of a repeated name. So the later question silently
+    answers for the earlier one.
+
+    This is not hypothetical. 'What was resolved?' was the title of BOTH the override
+    question (required: the reasoning for setting aside another curator's objection, the
+    only durable record of why it did not stand) and the correction-approval question
+    (optional). The correction column came second, so every override stored reason_text="",
+    and the parser did not complain because it never asked for that field. Found by an
+    independent review on 2026-08-14 and confirmed against the live form the same day.
+
+    No fixture can catch it -- the tests build a row as a dict, and a dict cannot hold one
+    key twice. This reads the generator instead.
+    """
+    import re
+    from malavi_curation.config import repo_root
+
+    script = (repo_root() / "curation" / "apps_script"
+              / "create_verdict_form.gs").read_text(encoding="utf-8")
+    # Question titles only. Page titles come from addPageBreakItem().setTitle(...) and are
+    # allowed to repeat a question's wording -- they are not columns.
+    titles = re.findall(r"\.setTitle\('([^']+)'\)", script)
+    pages = re.findall(r"addPageBreakItem\(\)\s*\.setTitle\('([^']+)'\)", script)
+    pages += re.findall(r"addPageBreakItem\(\)\s*\n\s*\.setTitle\('([^']+)'\)", script)
+    questions = [title for title in titles if title not in set(pages)]
+
+    duplicates = {title for title in questions if questions.count(title) > 1}
+    assert not duplicates, (
+        f"these question titles appear more than once: {sorted(duplicates)}. Each becomes "
+        f"a response-sheet column, and the later one answers for the earlier.")
+
+
+def test_the_two_reasoning_columns_are_read_from_different_questions():
+    """The pair that collided. Stated separately so renaming one back is a test failure."""
+    assert verdicts.COL_RESOLVED != verdicts.COL_CONCLUDED

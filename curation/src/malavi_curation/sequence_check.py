@@ -128,16 +128,30 @@ class Reference:
         recs = read_fasta(Path(path))
         if not recs:
             raise ValueError(f"no sequences in {path}")
-        names = list(recs)
-        seqs = [recs[n] for n in names]
+        return cls.from_sequences(list(recs), [recs[n] for n in recs],
+                                  where=str(path))
+
+    @classmethod
+    def from_sequences(cls, names: Sequence[str], seqs: Sequence[str],
+                       where: str = "the given sequences") -> "Reference":
+        """A reference built from sequences already in hand.
+
+        The alignment on disk is one source; the record store is another, and it is the
+        one ``store_ingest`` uses. Every lineage MalAvi holds is exactly 479 bp and sits
+        at offset 0 by construction, so the store *is* a valid reference and using it
+        avoids making ingest depend on an exported file that may not have been rebuilt.
+        """
+        seqs = [s for s in seqs]
+        if not seqs:
+            raise ValueError(f"no sequences in {where}")
         width = len(seqs[0])
         if any(len(s) != width for s in seqs):
-            raise ValueError("reference alignment is ragged; expected equal lengths")
+            raise ValueError(f"{where} is ragged; expected equal lengths")
         consensus = []
         for col in range(width):
             counts = Counter(s[col] for s in seqs if s[col] in BASES)
             consensus.append(counts.most_common(1)[0][0] if counts else "N")
-        return cls(names, seqs, width, "".join(consensus))
+        return cls(list(names), seqs, width, "".join(consensus))
 
 
 @dataclass
@@ -227,6 +241,43 @@ def _place(query: str, offset: int, width: int) -> str:
     if len(placed) < width:
         placed += "N" * (width - len(placed))
     return placed[:width]
+
+
+# A reference sequence must cover at least this much of the query before its *rate* of
+# mismatch is trusted for ranking. 92 of the 5,365 sequences in the 2026-03-23 alignment
+# fall below it (1.7%); the median is 478. Same value, and the same reasoning, as
+# lineage_resolve.MIN_COMPARABLE_TO_ASSIGN.
+MIN_COMPARABLE_TO_RANK = 300
+
+
+def _neighbor_rank(d: int, c: int) -> Tuple[int, int, float, int]:
+    """Sort key for one candidate neighbor: lower is nearer.
+
+    **Ranked by rate of mismatch, not by count.** Counting absolute mismatches lets a
+    reference that overlaps the query in few positions win simply by having less to
+    disagree over. NECMON01 (2026-08-20) was reported as nearest to ``P_RBQ18`` -- 23
+    mismatches, but over only 133 comparable positions, 82.7% identity, and ``P_RBQ18`` is
+    the *least* covered sequence in the whole alignment. Its true nearest relative,
+    ``N_CIAE08``, was 38 mismatches over 477 positions: 92.0% identity, and the clade the
+    lineage actually belongs to. The curator report named a *Plasmodium* as the closest
+    relative of a *Haemoproteus*.
+
+    Three terms, in order:
+
+    1. **An exact match always wins**, whatever it covers. This is unchanged, and
+       deliberately so: "never report a known lineage as new" is the rule this function
+       exists to enforce, and it is checked against ``nearest[0]``. Making an exact match
+       compete on rate would risk a lineage MalAvi already holds being announced as novel,
+       which is the one outcome worse than a confusing neighbor list.
+    2. **Thinly covered references sort after well covered ones**, so a 20-position overlap
+       with one mismatch cannot outrank a full-length relative. They are ordered after
+       rather than dropped: a submission that only overlaps short references still gets a
+       neighbor list, and the ``comparable`` column shows why it is weak.
+    3. **Then rate, then coverage, then name** -- the last for a deterministic order.
+    """
+    if d == 0:
+        return (0, 0, 0.0, -c)
+    return (1, 0 if c >= MIN_COMPARABLE_TO_RANK else 1, d / c, -c)
 
 
 def _distance(a: str, b: str) -> Tuple[int, int]:
@@ -324,9 +375,9 @@ def check_sequence(sequence: str, ref: Reference, label: str = "query",
     for name, rseq in zip(ref.names, ref.seqs):
         d, c = _distance(placed, rseq)
         if c:
-            scored.append((d, -c, name))
+            scored.append((_neighbor_rank(d, c), name, d, c))
     scored.sort()
-    res.nearest = [(name, d, -negc) for d, negc, name in scored[:top_n]]
+    res.nearest = [(name, d, c) for _rank, name, d, c in scored[:top_n]]
 
     if res.nearest:
         best_name, best_dist, best_comp = res.nearest[0]
@@ -340,10 +391,16 @@ def check_sequence(sequence: str, ref: Reference, label: str = "query",
         elif best_dist == 1:
             res.verdict = "new_candidate"
             res.flags.append("one_base_from_known_lineage")
+            # Says the fact and stops. It used to add "New under the >=1 bp rule, but
+            # confirm the difference is real and not a sequencing artifact", which was
+            # dropped 2026-08-19: every curator knows the rule, and confirming that a
+            # base is not an artifact is not something a curator can do from a report.
+            # The specific notes -- which position, transversion or not, how rare the
+            # base is, whether the codon changes -- are what actually help, and they
+            # are already carried alongside this line.
             res.notes.append(
                 f"Differs from {best_name} at a single position of {best_comp} "
-                f"compared. New under the >=1 bp rule, but confirm the difference "
-                f"is real and not a sequencing artifact.")
+                f"compared.")
         else:
             res.verdict = "new_candidate"
     else:
