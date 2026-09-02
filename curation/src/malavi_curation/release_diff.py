@@ -542,6 +542,7 @@ def compare(previous: Edition, current: Edition,
     # Row-level differences, per table.
     tables: Dict[str, Any] = {}
     _all_added_references: List[Dict[str, str]] = []
+    _all_removed_references: List[Dict[str, str]] = []
     for table in COMPARED_TABLES:
         if table in previous.missing:
             tables[table] = {
@@ -558,6 +559,7 @@ def compare(previous: Edition, current: Edition,
         diff = diff_table(table, previous.rows(table), current.rows(table))
         if table == "references":
             _all_added_references = list(diff.added)
+            _all_removed_references = list(diff.removed)
         tables[table] = {
             "table": table, "title": TABLE_TITLES[table], "compared": True, "note": "",
             "previous_rows": diff.previous_rows, "current_rows": diff.current_rows,
@@ -632,8 +634,11 @@ def compare(previous: Edition, current: Edition,
                            "STUDY_TYPE")),
                        "records": records_per_reference.get(name, 0)}
                       for name in sorted(added_reference_names)],
+            # From the whole removed set, for the same reason as "added" above: the
+            # removed_rows listing is capped at example_limit, and reading the retired
+            # studies from it was the bug fixed for the added side and left on this one.
             "removed": [_text(row.get("REFERENCE_NAME"))
-                        for row in tables["references"]["removed_rows"]],
+                        for row in _all_removed_references],
         },
         "hosts": {
             "compared": hosts_compared,

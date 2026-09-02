@@ -245,6 +245,13 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set],
             issue("error", "sequence_is_known_lineage",
                   f"{name}: sequence is IDENTICAL to existing lineage "
                   f"{res.nearest[0][0]} — do not assign a new name.", name)
+        if res.verdict == "exact_match_low_coverage":
+            # Identical to a known lineage over every shared position, but too few of
+            # them to call it that lineage. It cannot be named as new either: a name
+            # needs a sequence that is actually distinct, and this one may not be. So it
+            # blocks, like a known lineage does, until a longer read settles it.
+            issue("error", "sequence_identity_unresolved",
+                  f"{name}: {res.notes[-1]}", name)
         if "needs_reframing" in res.flags:
             issue("warn", "sequence_needs_reframing", f"{name}: {res.notes[0]}", name)
         if "contains_stop_codon" in res.flags:
@@ -328,6 +335,17 @@ def offer_free_names(reports: List[dict], known: Optional[set],
     # be durable: a curator approves a submission *including* this correction, so what was
     # suggested is part of what was agreed, and the name that is finally reserved and
     # released has to be traceable to the moment it was offered.
+    #
+    # Everything that is not free: what the release owns, what other submissions in the
+    # queue have already claimed, and what THIS submission proposes in any of its
+    # workbooks. Built once for the whole submission and carried across the loop below,
+    # so a number offered for the first workbook is unavailable to the second. It used to
+    # be rebuilt per report, and two workbooks in one submission that proposed the same
+    # taken host acronym were both offered the same free number.
+    claimed_here = set(known or ()) | set(claimed_elsewhere or {})
+    for report_dict in reports:
+        claimed_here.update(str(n) for n in (report_dict.get("lineages") or {}))
+
     for report_dict in reports:
         # Both codes want a free alternative offered. A name another submission claimed
         # first is just as unavailable to this submitter as one the release already holds
@@ -360,12 +378,6 @@ def offer_free_names(reports: List[dict], known: Optional[set],
         if not taken or known is None:
             continue
         suggestions = {}
-        # Everything that is not free: what the release owns, what THIS submission is
-        # claiming (so two taken names cannot both be offered the same free number), and
-        # what other submissions in the queue have already claimed. The last of those was
-        # missing, and it is the one that could hand two submitters the same name.
-        claimed_here = set(known) | set(claimed_elsewhere or {}) | {
-            str(n) for n in (report_dict.get("lineages") or {})}
         for name, entry in (report_dict.get("lineages") or {}).items():
             if name not in taken or name in already_a_known_lineage:
                 continue

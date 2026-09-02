@@ -97,7 +97,8 @@ def already_sent(entry, event: str) -> Optional[str]:
     return None
 
 
-def settled(entry, config: Dict, now: Optional[datetime] = None) -> Tuple[bool, str]:
+def settled(entry, config: Dict, now: Optional[datetime] = None,
+            entries: Optional[Dict[str, object]] = None) -> Tuple[bool, str]:
     """Is this submission finished enough to tell the submitter? With the reason if not.
 
     Deliberately re-derived here rather than read off a flag, for the same reason
@@ -109,12 +110,24 @@ def settled(entry, config: Dict, now: Optional[datetime] = None) -> Tuple[bool, 
     approval; applied to a decline it does the plainer job of giving anyone a window to
     undo a mis-click before a stranger is told unwelcome news. One concept, one knob, both
     directions.
+
+    ``entries`` is the rest of the ledger. When it is given, a name that another live,
+    approved, released or dormant submission also holds is never confirmed: the email
+    tells its reader to put the name in GenBank, and two people told that about one name
+    is the failure the whole reservation system exists to prevent. The ingest-time
+    collision check (``store_ingest.colliding_lineages``) runs too late to stop it.
     """
     if entry.state not in OUTCOMES:
         return False, f"state is {entry.state}; nothing to tell the submitter yet"
 
     if entry.state == "approved" and ledger.blocking_holds(entry):
         return False, "a blocking verdict stands"
+
+    if entry.state == "approved" and entries is not None:
+        clashes = ledger.names_held_elsewhere(entries, entry)
+        if clashes:
+            return False, (f"another submission holds "
+                           f"{ledger.describe_name_clashes(clashes)}")
 
     # Which timestamp the wait is measured from is this program's decision -- an approval
     # has a field for it, a decline is read out of the history. The arithmetic itself, and
@@ -233,7 +246,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     config = load_config()
     inbox = submissions_inbox()
-    sent = skipped = failed = 0
+    sent = skipped = failed = refused = 0
     named = bool(arguments.submission_id)   # explain skips only when asked about one
 
     try:
@@ -259,7 +272,21 @@ def main(argv: Optional[List[str]] = None) -> int:
                         print(f"  {submission_id}: already told, on {when}")
                     continue
 
-                ready, why_not = settled(entry, config)
+                # A name two submissions claim is not "not due"; it is a fault a person has
+                # to resolve, and a quiet skip would leave both submitters waiting for an
+                # email that never comes. So it is reported on stderr and counted as a
+                # refusal, before settled() -- which applies the same rule -- is consulted.
+                if entry.state == "approved":
+                    clashes = ledger.names_held_elsewhere(entries, entry)
+                    if clashes:
+                        print(f"  {submission_id}: REFUSED -- another submission holds "
+                              f"{ledger.describe_name_clashes(clashes)}. Not confirming a "
+                              f"name two submissions claim; resolve which claim stands.",
+                              file=sys.stderr)
+                        refused += 1
+                        continue
+
+                ready, why_not = settled(entry, config, entries=entries)
                 if not ready:
                     skipped += 1
                     if named:
@@ -329,7 +356,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                     failed += 1
                     continue
 
-                print(f"    sent to {result.notified} address(es)")
+                if getattr(result, "action", "") == "already_sent":
+                    # The endpoint keeps its own record of what it has mailed, keyed on
+                    # the submission and its names, and declined to send a second copy.
+                    # That is the case where a previous attempt timed out here after the
+                    # mail had gone; the history record below is what was missing.
+                    print("    already sent by the endpoint on an earlier attempt; "
+                          "recorded, not re-sent")
+                else:
+                    print(f"    sent to {result.notified} address(es)")
                 entry.history.append(record)
                 sent += 1
 
@@ -357,8 +392,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         # will not be repeated. Say plainly that the run was partial.
         print(f"{failed} delivery/deliveries failed and will be retried on the next run.",
               file=sys.stderr)
-        return 1
-    return 0
+    if refused:
+        # Not a retry case: the next run refuses again until somebody decides which of the
+        # two submissions holds the name.
+        print(f"{refused} confirmation(s) refused because another submission holds the "
+              f"same name; these need a person, not a retry.", file=sys.stderr)
+    return 1 if (failed or refused) else 0
 
 
 if __name__ == "__main__":

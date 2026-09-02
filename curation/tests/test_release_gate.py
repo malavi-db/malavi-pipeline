@@ -302,3 +302,62 @@ def build_release_reason():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.RELEASED_REASON
+
+
+# ------------------------------------------------------- saying what to do about it
+
+def withdrawn_entry(registry):
+    """An approved, ingested submission the submitter then took back."""
+    entry = approved_entry(registry)
+    ledger.transition(entry, "withdrawn", "vaellis@udel.edu",
+                      at="2026-08-15T00:00:00+00:00", reason="withdrawn_by_submitter")
+    return entry
+
+
+def test_a_refusal_for_a_withdrawn_submission_names_the_retract_command(registry):
+    """The refusal said what was wrong; only RUNBOOK row 12b said what to do."""
+    entry = withdrawn_entry(registry)
+    entries = {entry.submission_id: entry}
+    gate = release_gate.check(store_with(entry.submission_id), entries)
+    assert not gate.ok
+
+    lines = release_gate.describe(gate, entries=entries, release="2026-09-02")
+    command = [line for line in lines if "--retract" in line]
+    assert len(command) == 1
+    assert command[0].strip() == (
+        ".venv/bin/python curation/ingest_submissions.py --release 2026-09-02 "
+        f"--retract {entry.submission_id} --apply")
+
+
+def test_an_embargo_refusal_offers_no_retraction(registry):
+    """An embargoed submission's rows are waiting for a paper, not for deletion."""
+    entry = approved_entry(registry)
+    entry.embargoed = True
+    entries = {entry.submission_id: entry}
+    gate = release_gate.check(store_with(entry.submission_id), entries)
+    assert not gate.ok
+    assert not any("--retract" in line
+                   for line in release_gate.describe(gate, entries=entries))
+
+
+def test_the_build_prints_the_retract_command_when_it_refuses(build_release_cli, tmp_path,
+                                                              registry, monkeypatch,
+                                                              capsys):
+    entry = withdrawn_entry(registry)
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    ledger.save(inbox, {entry.submission_id: entry})
+
+    monkeypatch.setattr(build_release_cli, "read_store",
+                        lambda _dir: store_with("seed", entry.submission_id))
+    monkeypatch.setattr(build_release_cli, "store_dir", lambda _root: tmp_path / "store")
+    monkeypatch.setattr(build_release_cli, "submissions_inbox", lambda _root: inbox)
+
+    destination = tmp_path / "releases"
+    code = build_release_cli.main(["--release", "2026-09-02",
+                                   "--destination", str(destination)])
+    err = capsys.readouterr().err
+
+    assert code == 2
+    assert f"--release 2026-09-02 --retract {entry.submission_id} --apply" in err
+    assert not destination.exists()

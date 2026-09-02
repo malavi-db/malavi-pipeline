@@ -870,8 +870,8 @@ CHECK_GROUPS = (
         "name_malformed",
         "accession_collision", "accession_resolves")),
     ("Sequences", (
-        "sequence_is_known_lineage", "sequence_qc", "sequence_needs_reframing",
-        "sequence_stop_codon", "sequence_unplaceable")),
+        "sequence_is_known_lineage", "sequence_identity_unresolved", "sequence_qc",
+        "sequence_needs_reframing", "sequence_stop_codon", "sequence_unplaceable")),
     ("Hosts and geography", (
         "host_geography_plausible", "host_not_in_malavi", "host_name_resolves",
         "host_missing", "host_binomial", "country_not_in_malavi", "country_missing",
@@ -898,6 +898,9 @@ FINDING_HEADLINES = {
         "{subjects} was already claimed by an earlier submission still under review",
     "sequence_is_known_lineage":
         "{subjects} was listed as new, but the sequence is already in MalAvi",
+    "sequence_identity_unresolved":
+        "{subjects} matches a MalAvi lineage exactly, but over too little sequence to say "
+        "whether it is that lineage",
     "sequence_qc": "{subjects}: unusual for a cytochrome b barcode",
     "sequence_needs_reframing": "{subjects} may not be in the standard reading frame",
     "sequence_stop_codon": "{subjects} contains a stop codon",
@@ -1954,6 +1957,39 @@ def render_paper_only_report(
         action = (f'<p><a class="verdict-link" href="{esc(submit_form_url)}">'
                   f'Submit the data from this paper</a></p>')
 
+    # Two different situations share this report. A paper with no template is a
+    # submission a curator can act on. A response with nothing attached at all is not:
+    # there is no paper to read, and the only move is to ask the submitter what they
+    # meant to send. Until 2026-09-02 both wore the paper-only wording, which told a
+    # curator to read a paper that did not exist.
+    if files:
+        title = "a paper with no data template"
+        banner = ("This submission arrived as a paper without a filled-in data template, "
+                  "so there was nothing for the automatic checks to read: no proposed "
+                  "names to test for collisions, no sequences to compare against the "
+                  "release, no records to place.")
+        guidance = (
+            "<h2 class=\"display\">This one is yours to complete</h2>\n"
+            "<p>A paper on its own is a perfectly good way to send data to MalAvi, and "
+            "this is how it gets in: a curator reads the paper, fills in the data "
+            "template, and submits that as a new submission. It then goes through every "
+            "check in the ordinary way and comes back as a normal report.</p>\n"
+            "<p>There is nothing to approve or reject here. Until the data are entered, "
+            "this is an open item rather than a decision.</p>")
+    else:
+        title = "a response with no files attached"
+        banner = ("This response arrived with no files attached at all: no data template "
+                  "and no paper. There was nothing for the automatic checks to read and "
+                  "nothing for a curator to read either.")
+        guidance = (
+            "<h2 class=\"display\">Ask the submitter what they meant to send</h2>\n"
+            "<p>The form answers above are the whole submission. The likeliest reason is "
+            "an upload that did not go through; the submitter can edit their response "
+            "and attach the file, and the next fetch will pick it up under this same "
+            "submission.</p>\n"
+            "<p>There is nothing to approve or reject here. Until a file arrives, this "
+            "is an open item rather than a decision.</p>")
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1961,25 +1997,17 @@ def render_paper_only_report(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; style-src 'unsafe-inline'; img-src data:;">
-<title>MalAvi review — a paper with no data template</title>
+<title>MalAvi review — {title}</title>
 <style>{_stylesheet()}</style>
 </head>
 <body><div class="wrap">
 <h1 class="display">MalAvi submission review</h1>
 <dl class="meta">{cells}</dl>
 
-<div class="banner"><b>Nothing here has been checked.</b> This submission arrived as a
-paper without a filled-in data template, so there was nothing for the automatic checks to
-read: no proposed names to test for collisions, no sequences to compare against the
-release, no records to place. Treat everything below as unexamined.</div>
+<div class="banner"><b>Nothing here has been checked.</b> {banner} Treat everything below
+as unexamined.</div>
 
-<h2 class="display">This one is yours to complete</h2>
-<p>A paper on its own is a perfectly good way to send data to MalAvi, and this is how it
-gets in: a curator reads the paper, fills in the data template, and submits that as a new
-submission. It then goes through every check in the ordinary way and comes back as a
-normal report.</p>
-<p>There is nothing to approve or reject here. Until the data is entered, this is an open
-item rather than a decision.</p>
+{guidance}
 {action}
 
 {files or '<p class="sub">No uploaded file was recorded with this submission.</p>'}

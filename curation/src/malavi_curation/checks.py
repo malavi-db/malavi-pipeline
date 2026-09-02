@@ -190,6 +190,14 @@ CHECKS: Dict[str, Check] = {c.id: c for c in [
     _check("sequence_is_known_lineage", "New sequences are actually new",
            "No sequence offered as new is identical to a lineage MalAvi already names.",
            "sequence", Severity.BLOCKING),
+    # Blocking for the same reason as the check above: a name may only go on a sequence
+    # that is known to be distinct. An exact match over too few positions to trust is
+    # neither known nor new, and nothing can be named from it until a longer read
+    # covers more of the barcode.
+    _check("sequence_identity_unresolved", "Sequences overlap the alignment enough to be called",
+           "No sequence offered as new matches a MalAvi lineage exactly over too few "
+           "positions to say whether it is that lineage.",
+           "sequence", Severity.BLOCKING),
     _check("sequence_needs_reframing", "Sequences are in the MalAvi reading frame",
            "Each sequence starts on a codon boundary of the 479 bp cytochrome b window.",
            "sequence", Severity.WARNING),
@@ -588,7 +596,7 @@ _R_CHECK_IDS = ("host_name_resolves", "host_geography_plausible",
 # "we looked and it was fine" is information a curator needs.
 _SCREEN_CHECK_IDS = frozenset({
     "name_already_in_malavi", "name_claimed_by_another_submission",
-    "sequence_is_known_lineage", "sequence_needs_reframing",
+    "sequence_is_known_lineage", "sequence_identity_unresolved", "sequence_needs_reframing",
     "sequence_stop_codon", "sequence_unplaceable", "accession_malformed",
     "lineage_without_sequence", "sequence_without_declaration", "record_without_country",
     "record_without_prevalence", "lineage_without_host_record", "reference_missing",

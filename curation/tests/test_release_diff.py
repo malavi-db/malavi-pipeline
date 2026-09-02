@@ -288,6 +288,23 @@ class TestCompare:
         assert result["references"]["added"][0]["records"] == 2
         assert result["references"]["added"][0]["title"] == "New work"
 
+    def test_retired_studies_are_read_from_the_whole_removed_set(self):
+        """The bug fixed for "added" and left on "removed": the list of retired studies
+        was read from the example_limit-capped removed_rows listing, so a cap smaller than
+        the number of retired studies silently dropped some, and a cap of 0 dropped all."""
+        previous = _edition("2026-03-23", _store(
+            lineages=[_lineage("TURDUS01")],
+            references=[_reference("Keep et al 2019"), _reference("Gone et al 2018"),
+                        _reference("Lost et al 2017")]))
+        current = _edition("2026-08-14", _store(
+            lineages=[_lineage("TURDUS01")],
+            references=[_reference("Keep et al 2019")]))
+        for limit in (1, 0):
+            result = compare(previous, current, example_limit=limit)
+            assert sorted(result["references"]["removed"]) == \
+                ["Gone et al 2018", "Lost et al 2017"], f"example_limit={limit}"
+            assert len(result["tables"]["references"]["removed_rows"]) == limit
+
     def test_added_records_are_grouped_by_the_study_that_reported_them(self):
         previous = _edition("2026-03-23", _store(lineages=[_lineage("TURDUS01")]))
         current = _edition("2026-08-14", _store(

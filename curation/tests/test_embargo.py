@@ -328,13 +328,14 @@ def test_a_fully_embargoed_study_is_told_the_order_not_handed_a_reference_row(
     assert ledger.load(inbox)[SUBMISSION].embargoed is True, "nothing was lifted yet"
 
 
-def test_a_partly_ingested_study_renames_and_lifts_in_one_go(
+def test_a_partly_ingested_study_renames_and_lifts_in_one_go_when_told_to(
         publish_reference, inbox, entries, tmp_path, monkeypatch, capsys):
     """MalAvi already held some of the study; the rest is embargoed.
 
     The seed rows give the rename something to do. The embargoed submission contributed
     none of them, so ``submissions_behind`` cannot see it -- which is the whole bug -- and
-    it has to come from the ledger instead.
+    it has to come from the ledger instead. This order is opt-in now (see the refusal
+    test below), so the flag is passed.
     """
     seed_store(tmp_path, host_rows=[
         {"LINEAGE_NAME": "TUMIG19", "REFERENCE_NAME": STUDY, "_source": "seed",
@@ -342,7 +343,8 @@ def test_a_partly_ingested_study_renames_and_lifts_in_one_go(
     _publish_workspace(publish_reference, monkeypatch, tmp_path, inbox)
 
     code = publish_reference.main([STUDY, "Barrow et al 2027", "--year", "2027",
-                                   "--journal", "Mol Ecol", "--apply"])
+                                   "--journal", "Mol Ecol", "--apply",
+                                   "--allow-embargoed-behind"])
     output = capsys.readouterr().out
 
     assert code == 0
@@ -366,7 +368,8 @@ def test_the_new_reference_row_is_not_stamped_with_an_embargoed_submission(
     _publish_workspace(publish_reference, monkeypatch, tmp_path, inbox)
 
     publish_reference.main([STUDY, "Barrow et al 2027", "--year", "2027",
-                            "--journal", "Mol Ecol", "--apply"])
+                            "--journal", "Mol Ecol", "--apply",
+                            "--allow-embargoed-behind"])
     capsys.readouterr()
 
     references = read_table(directory, TABLES["references"])
@@ -376,3 +379,35 @@ def test_the_new_reference_row_is_not_stamped_with_an_embargoed_submission(
     assert added[0]["_source"] == "seed", \
         "the rows that cite it are seed rows, so the citation is seed too"
     assert added[0]["_source"] != SUBMISSION
+
+
+def test_a_partly_embargoed_study_is_refused_until_the_held_submissions_are_ingested(
+        publish_reference, inbox, entries, tmp_path, monkeypatch, capsys):
+    """The order that split one study into two names.
+
+    Some rows are in the store, one submission is still embargoed and never ingested.
+    Renaming the stored rows and lifting the embargo -- what this program did without a
+    word -- leaves the held workbook saying "Barrow et al unpubl", and the ingest copies
+    that cell verbatim. So the partly-embargoed study gets the same instruction as the
+    fully-embargoed one: lift, ingest, then rename. Nothing is renamed or lifted.
+    """
+    from malavi_curation.release_store import TABLES, read_table
+
+    directory = seed_store(tmp_path, host_rows=[
+        {"LINEAGE_NAME": "TUMIG19", "REFERENCE_NAME": STUDY, "_source": "seed",
+         "_added": "2026-03-23", "RECORD_ID": "HST-000001"}])
+    _publish_workspace(publish_reference, monkeypatch, tmp_path, inbox)
+
+    code = publish_reference.main([STUDY, "Barrow et al 2027", "--year", "2027",
+                                   "--journal", "Mol Ecol", "--apply"])
+    output = capsys.readouterr().out
+
+    assert code == 1
+    assert "REFUSING" in output and SUBMISSION in output
+    assert "lift_embargo.py" in output and "ingest_submissions.py" in output, \
+        "the same lift -> ingest -> rename order the fully-embargoed case prints"
+    assert "--allow-embargoed-behind" in output, "and how to insist"
+    assert ledger.load(inbox)[SUBMISSION].embargoed is True, "nothing was lifted"
+    hosts = read_table(directory, TABLES["host_records"])
+    assert [row["REFERENCE_NAME"] for row in hosts] == [STUDY], "nothing was renamed"
+    assert read_table(directory, TABLES["references"]) == [], "no reference row added"

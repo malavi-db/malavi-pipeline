@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import zipfile
 from collections import defaultdict
 from datetime import date
@@ -74,7 +75,14 @@ from .country_regions import (
     REGION_COLUMNS, load_region_map, region_for, rows_needing_review, unmapped_countries,
 )
 from . import reference_names
-from .release_store import TABLES, read_store, store_dir
+from .release_store import SEED, TABLES, read_store, store_dir
+
+# A published citation as MalAvi writes it: "<Authors> <year>", with the optional letter
+# that tells two papers from one group in one year apart ("Hellgren et al 2007a"). Used
+# to find the published sibling of a "<Authors> unpubl" name -- the shape publish_reference
+# renames to -- and nothing else, so the author part is left as loose as
+# reference_names leaves it.
+_PUBLISHED_CITATION = re.compile(r"^(?P<authors>.+?)\s+(?P<year>\d{4}[a-z]?)$")
 
 # The Grand Lineage Summary's columns, in the release's own order. The first five and the
 # last are primary facts copied from the store's lineages table; everything between them
@@ -345,11 +353,16 @@ def build_release(store: Dict[str, List[Dict[str, Any]]], release: str,
 
     # Anything that would make the release wrong in a way nobody would notice.
     hosts = store.get("host_records", [])
+    vectors = store.get("vector_records", [])
     warnings: List[str] = []
-    missing = unmapped_countries(hosts, region_map)
+    # Host AND vector rows, because derive_summary reads the region flags from both. Until
+    # 2026-09-02 only the host rows were checked, so a vector record from a country the
+    # table does not cover set no region and drew no warning -- and for the 614 lineages
+    # with no host record at all, the vector table is the only geography there is.
+    missing = unmapped_countries(list(hosts) + list(vectors), region_map)
     if missing:
         warnings.append(
-            f"{len(missing)} country name(s) in the host records are not in "
+            f"{len(missing)} country name(s) in the host and vector records are not in "
             f"reference/country_regions.csv, so their records set no region: "
             f"{', '.join(sorted(missing))}")
     review = rows_needing_review()
@@ -426,6 +439,44 @@ def build_release(store: Dict[str, List[Dict[str, Any]]], release: str,
         warnings.append(
             f"{blank_citations} record row(s) carry no REFERENCE_NAME at all, so they "
             f"are published with no attribution")
+
+    # The fault the "unpubl" exclusion above is blind to. publish_reference renames a
+    # study's rows from "<Authors> unpubl" to the citation and lifts the embargo on every
+    # submission behind the study -- including ones never ingested, whose workbooks still
+    # say "unpubl". A later ingest copies the Reference cell verbatim, so the study sits in
+    # the store under two names, and neither is an orphan in the sense checked above: one
+    # has its reference row, the other is excused as unpublished.
+    #
+    # Only INGESTED rows are examined, deliberately. The seed carries 20 unpublished names
+    # beside a same-author published paper ("Hellgren et al unpubl" next to "Hellgren et
+    # al 2004", and so on), every one a different study; they predate the rename program
+    # and cannot be this fault, and a warning that fires twenty times on every build is
+    # one nobody reads. A row a submission brought can be this fault, and it is named.
+    published_by_authors: Dict[str, List[str]] = defaultdict(list)
+    for name in known_references:
+        match = _PUBLISHED_CITATION.match(name)
+        if match:
+            published_by_authors[match.group("authors").strip()].append(name)
+    split_studies: Dict[str, int] = defaultdict(int)
+    for table_name in ("host_records", "vector_records", "alt_names", "morpho_species"):
+        for row in store.get(table_name, []):
+            source = _text(row.get("_source"))
+            if not source or source == SEED:
+                continue
+            cited = _text(row.get("REFERENCE_NAME"))
+            if (reference_names.is_unpublished(cited)
+                    and reference_names.authors_of(cited) in published_by_authors):
+                split_studies[cited] += 1
+    if split_studies:
+        listed = ", ".join(
+            f"{name} ({count} row(s); published as "
+            f"{', '.join(sorted(published_by_authors[reference_names.authors_of(name)]))})"
+            for name, count in sorted(split_studies.items()))
+        warnings.append(
+            f"{len(split_studies)} unpublished citation(s) on ingested rows already have "
+            f"a published row under the same authors in references.csv, so one study may "
+            f"be in the store under two names -- an ingest after publish_reference.py ran "
+            f"copies the workbook's 'unpubl' name verbatim; rename those rows: {listed}")
 
     # REFERENCE_NAME is the join key malaviR and the site use, so a duplicate fans out
     # every join on it 2x. The build already checks LINEAGE_NAME for the same reason.

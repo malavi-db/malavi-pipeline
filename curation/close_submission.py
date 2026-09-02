@@ -95,6 +95,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -102,6 +103,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from malavi_curation.config import load_config, repo_root      # noqa: E402
 from malavi_curation import ledger as ledger_mod               # noqa: E402
 from malavi_curation import public_feeds                       # noqa: E402
+from malavi_curation import release_gate                       # noqa: E402
+from malavi_curation.release_store import read_store, store_dir  # noqa: E402
 
 # Writing nothing is the default, as in every other program here that changes the ledger.
 DRY_RUN_DEFAULT = True
@@ -180,9 +183,39 @@ def reason_for(action: str, requested: str) -> Tuple[str, str]:
     return requested, ""
 
 
+def retract_command(submission_id: str) -> str:
+    """The exact ``ingest_submissions.py --retract`` invocation for one submission.
+
+    ``--release`` is required by that program's parser even though a retraction writes no
+    release tag, so today's date is filled in to make the line copy-pasteable rather than
+    a template the operator has to finish.
+    """
+    return (f".venv/bin/python curation/ingest_submissions.py --release "
+            f"{date.today().isoformat()} --retract {submission_id} --apply")
+
+
+def submission_rows_in_store(submission_id: str, root: Optional[Path] = None) -> bool:
+    """Does the record store hold rows this submission contributed?
+
+    Read from the store itself rather than inferred from the ledger, because the ledger
+    does not know whether ingest ran. A missing store (a fresh checkout) means no.
+    """
+    records = store_dir(root or repo_root())
+    if not records.is_dir():
+        return False
+    return submission_id in release_gate.sources_in_store(read_store(records))
+
+
 def describe_close(action: str, before: str, names: List[str],
-                   config: Optional[Dict[str, Any]] = None) -> List[str]:
-    """The lines reporting one close, written for somebody checking it did what they meant."""
+                   config: Optional[Dict[str, Any]] = None,
+                   submission_id: str = "", rows_in_store: bool = False) -> List[str]:
+    """The lines reporting one close, written for somebody checking it did what they meant.
+
+    ``rows_in_store`` says whether the submission was already ingested. A withdrawn or
+    declined submission whose rows are still in the store blocks every release build, and
+    the only thing that unblocks it is a command in another program; so that command is
+    printed here, where the operator is, rather than left for RUNBOOK row 12b.
+    """
     target, phrase = ACTIONS[action]
     lines = [f"  {before} -> {target}"]
 
@@ -197,8 +230,8 @@ def describe_close(action: str, before: str, names: List[str],
     elif action == "reopen":
         if names:
             lines.append(f"  reserved names re-claimed: {', '.join(sorted(names))}")
-            lines.append("  verify them against the reservation store before relying on "
-                         "them: a name can have been issued elsewhere while this was closed")
+            lines.append("  no other ledger entry holds them (checked); still verify them "
+                         "against the reservation store before relying on them")
         else:
             lines.append("  reserved names re-claimed: none were held")
     else:
@@ -217,7 +250,15 @@ def describe_close(action: str, before: str, names: List[str],
                      "wait has run")
     elif action == "withdraw":
         lines.append("  no message is sent; the submitter is the one who asked")
-    elif action == "reopen":
+    if action in ("decline", "withdraw") and rows_in_store:
+        # The release gate refuses any store row whose submission is not approved or
+        # released, and build_release refuses the whole build on one refusal. Until the
+        # rows are taken out, NO release can be built -- see RUNBOOK row 12b.
+        lines.append("  its rows are in the record store and now block every release "
+                     "build; take them out with:")
+        lines.append(f"      {retract_command(submission_id)}")
+        lines.append("      (drop --apply to preview what would be removed)")
+    if action == "reopen":
         lines.append("  no message is sent; re-screen once the new material is in the "
                      "submission directory, then the curators review it as usual")
     else:
@@ -234,7 +275,9 @@ def describe_close(action: str, before: str, names: List[str],
 
 
 def close(entry: Any, action: str, reason: str, actor: str, at: Optional[str] = None,
-          config: Optional[Dict[str, Any]] = None) -> Tuple[bool, List[str]]:
+          config: Optional[Dict[str, Any]] = None,
+          entries: Optional[Dict[str, Any]] = None,
+          rows_in_store: bool = False) -> Tuple[bool, List[str]]:
     """Move one submission, in either direction. Returns ``(moved, lines to print)``.
 
     Named ``close`` because finishing a submission is what it was written for; it also
@@ -246,6 +289,13 @@ def close(entry: Any, action: str, reason: str, actor: str, at: Optional[str] = 
     that a decline follows an objection rather than replacing one; a submission that is
     still live cannot be reopened, because there is nothing to revive — and the operator
     needs to read why, not a traceback.
+
+    ``entries`` is the rest of the ledger, and it is what lets a reopening be refused
+    rather than merely warned about when a re-claimed name has since been issued to
+    another submission (``ledger.transition`` does the check when it is given). Until
+    2026-09-02 this program only printed "verify them against the reservation store", and
+    a maintainer who did not would have revived a claim on a name somebody else had
+    already been told was theirs.
     """
     target, _ = ACTIONS[action]
     before = entry.state
@@ -286,11 +336,13 @@ def close(entry: Any, action: str, reason: str, actor: str, at: Optional[str] = 
 
     try:
         ledger_mod.transition(entry, target, actor=actor, at=at, reason=reason,
-                              config=config)
+                              config=config, entries=entries)
     except ledger_mod.LedgerError as exc:
         return False, [f"  REFUSED: {exc}"]
 
-    return True, describe_close(action, before, names, config)
+    return True, describe_close(action, before, names, config,
+                                submission_id=entry.submission_id,
+                                rows_in_store=rows_in_store)
 
 
 def main(argv=None) -> int:
@@ -352,8 +404,13 @@ def main(argv=None) -> int:
                 print(f"       live submissions: {', '.join(live)}", file=sys.stderr)
             return 2
 
+        # Only a decline or a withdrawal can leave ingested rows stranded in the store, so
+        # only those two pay for reading it.
+        in_store = (action in ("decline", "withdraw")
+                    and submission_rows_in_store(arguments.submission))
         moved, lines = close(entry, action, reason, arguments.actor,
-                             config=configuration)
+                             config=configuration, entries=entries,
+                             rows_in_store=in_store)
         for line in lines:
             print(line)
 

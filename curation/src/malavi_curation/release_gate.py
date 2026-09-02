@@ -223,11 +223,52 @@ def plan_release_transitions(entries: Dict[str, ledger.Entry],
     return refusals
 
 
-def describe(result: GateResult, refusals: Iterable[str] = ()) -> List[str]:
-    """The refusal as lines a person reads before deciding what to do about it."""
+def retract_command(source: str,
+                    entries: Optional[Dict[str, ledger.Entry]],
+                    release: Optional[str] = None) -> Optional[str]:
+    """The ``ingest_submissions.py --retract`` invocation that clears this violation.
+
+    ``None`` unless the rows belong to a submission the ledger knows and which has since
+    left ``approved`` -- withdrawn, declined, held, back in review. That is the one
+    situation with a mechanical answer: the rows were ingested on the strength of an
+    approval that no longer stands, and taking them back out is exactly what --retract
+    exists for (see ``ingest_submissions.retract_submissions``). Until this was printed,
+    the refusal said what was wrong and RUNBOOK row 12b was the only place that said what
+    to do about it.
+
+    No command is offered for the other refusals on purpose. An embargoed submission's
+    rows are waiting for a paper, and the answer is ``lift_embargo.py`` when it appears;
+    a standing hold is a curator's dissent still to be resolved; an unknown or blank
+    source is a provenance fault to be understood, not rows to be deleted. Suggesting a
+    retraction there would steer the operator toward destroying rows a pending decision
+    may still publish.
+
+    ``--release`` is required by ingest_submissions even on the retract path, so the
+    release being built is threaded through; without one a placeholder is shown.
+    """
+    entry = (entries or {}).get(source)
+    if entry is None or entry.state in ("approved", "released"):
+        return None
+    return (f".venv/bin/python curation/ingest_submissions.py --release "
+            f"{release or '<YYYY-MM-DD>'} --retract {source} --apply")
+
+
+def describe(result: GateResult, refusals: Iterable[str] = (),
+             entries: Optional[Dict[str, ledger.Entry]] = None,
+             release: Optional[str] = None) -> List[str]:
+    """The refusal as lines a person reads before deciding what to do about it.
+
+    Given ``entries``, a violation whose remedy is a retraction is followed by the exact
+    command -- see :func:`retract_command` for which ones those are, and why only those.
+    """
     lines: List[str] = []
     for violation in result.violations:
         lines.append(f"  {violation.describe()}")
+        command = retract_command(violation.source, entries, release)
+        if command:
+            lines.append(f"      its rows were ingested under an approval that no longer "
+                         f"stands; take them out of the store with:")
+            lines.append(f"      {command}")
     for refusal in refusals:
         lines.append(f"  {refusal}")
     return lines

@@ -187,6 +187,82 @@ def submission_dir_name(row: Dict[str, str], index: int) -> str:
     return f"{stamp}_{slugify(name, 32)}"
 
 
+def existing_directory_for(inbox: Path, row: Dict[str, str], index: int) -> Optional[str]:
+    """The directory an earlier fetch already made for this response, if there is one.
+
+    The directory name is the Form timestamp plus a slug of the submitter's name, and the
+    name half is the submitter's own answer, which they can edit. Until 2026-09-02 an edited
+    name produced a second directory for the same response: a second minted id, a second
+    queue entry, a second screen. The timestamp half never changes, because the Form stamps
+    it once, so a directory whose stamp matches and whose stored answers carry the same
+    Timestamp is this response's directory whatever the name now says.
+
+    Returns ``None`` when nothing matches, and the caller mints the name as before. Two
+    responses stamped in the same second are told apart by the Timestamp string being
+    compared in full, not by the stamp prefix alone.
+    """
+    stamp = submission_dir_name(row, index).split("_", 1)[0]
+    timestamp = (row.get("Timestamp") or "").strip()
+    if not timestamp or not inbox.is_dir():
+        return None
+    for candidate in sorted(inbox.iterdir()):
+        if not candidate.is_dir() or not candidate.name.startswith(stamp + "_"):
+            continue
+        stored = candidate / "metadata.json"
+        if not stored.is_file():
+            continue
+        try:
+            answers = json.loads(stored.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        if (answers.get("Timestamp") or "").strip() == timestamp:
+            return candidate.name
+    return None
+
+
+def write_metadata(sub_dir: Path, row: Dict[str, str]) -> str:
+    """Lay down the submission directory and its ``metadata.json`` for one response row.
+
+    Returns ``"created"``, ``"updated"`` or ``"unchanged"``, so the caller can say which.
+
+    **Written for every response, whether or not it uploaded anything.** Until 2026-09-02
+    a response with no attachments was dropped before this point: no directory, so no
+    minted id, no queue entry, no report and no email -- one line of stdout was the only
+    trace that somebody had submitted. It also meant a submitter who edited their answers
+    afterwards never had the edit stored, because the answers were only written alongside
+    a new download. Now the directory exists from the first fetch, the screen finds it
+    and reports "nothing to check" loudly, and the answers are refreshed whenever the
+    sheet's row differs from what is stored.
+
+    The form answers are curation context (who submitted, published or not, leaderboard
+    consent, free-text notes) and are the whole content of the file. Keys beginning with
+    ``_`` are this pipeline's own -- ``_fetched_at`` above all, which the report shows as
+    "Received" -- and are carried over from the existing file rather than rewritten, so an
+    edited answer does not move the received date.
+    """
+    answers = {k: v for k, v in row.items() if v}
+    path = sub_dir / "metadata.json"
+    existing: Dict[str, str] = {}
+    if path.is_file():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            # An unreadable file is replaced, not preserved: the sheet is the authority
+            # for the answers and the file is only a copy of it.
+            existing = {}
+    stored_answers = {k: v for k, v in existing.items() if not k.startswith("_")}
+    if path.is_file() and stored_answers == answers:
+        return "unchanged"
+
+    meta = dict(answers)
+    meta.update({k: v for k, v in existing.items() if k.startswith("_")})
+    meta.setdefault("_fetched_at",
+                    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    sub_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    return "updated" if existing else "created"
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dry-run", action="store_true",
@@ -244,36 +320,48 @@ def main(argv=None) -> int:
 
     new_files = fetched_subs = 0
     for i, row in enumerate(rows, 1):
-        dir_name = submission_dir_name(row, i)
+        # An earlier fetch's directory wins over a freshly derived name, so a submitter
+        # who edits their name does not become a second submission.
+        dir_name = existing_directory_for(inbox, row, i) or submission_dir_name(row, i)
         wanted: List[str] = []
         for question, cell in row.items():
             if any(h in (question or "").lower() for h in FILE_COLUMN_HINTS):
                 wanted.extend(drive_ids(cell))
         todo = [f for f in wanted if args.all or f not in ledger]
 
+        if args.dry_run:
+            # Report only. The directory and metadata.json are not written either, since a
+            # dry run that creates submissions is not a dry run.
+            if not wanted:
+                print(f"  {dir_name}: no uploaded files; [dry-run] would record the "
+                      f"answers so the screen can report it")
+            elif not todo:
+                print(f"  {dir_name}: up to date ({len(wanted)} file(s))")
+            else:
+                print(f"  {dir_name}: {len(todo)} new file(s) of {len(wanted)}")
+                for f in todo:
+                    print(f"      [dry-run] would download {f}")
+            continue
+
+        # The directory and the answers first, for every response -- see write_metadata
+        # for why a response with nothing attached still gets one.
+        sub_dir = inbox / dir_name
+        outcome = write_metadata(sub_dir, row)
+        touched = outcome != "unchanged"
+        note = f", answers {outcome}" if touched else ""
+
         if not wanted:
-            print(f"  {dir_name}: no uploaded files")
+            print(f"  {dir_name}: no uploaded files{note}; the screen will report it "
+                  f"as nothing to check")
+            fetched_subs += int(touched)
             continue
         if not todo:
-            print(f"  {dir_name}: up to date ({len(wanted)} file(s))")
+            print(f"  {dir_name}: up to date ({len(wanted)} file(s)){note}")
+            fetched_subs += int(touched)
             continue
 
-        print(f"  {dir_name}: {len(todo)} new file(s) of {len(wanted)}")
-        if args.dry_run:
-            for f in todo:
-                print(f"      [dry-run] would download {f}")
-            continue
-
-        sub_dir = inbox / dir_name
-        sub_dir.mkdir(parents=True, exist_ok=True)
-
-        # The form answers are curation context (who submitted, published or not,
-        # leaderboard consent, free-text notes). Keep them beside the files.
-        meta = {k: v for k, v in row.items() if v}
-        meta["_fetched_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        (sub_dir / "metadata.json").write_text(
-            json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
-
+        print(f"  {dir_name}: {len(todo)} new file(s) of {len(wanted)}{note}")
+        fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         for file_id in todo:
             try:
                 path = download_drive_file(file_id, sub_dir, token)
@@ -285,7 +373,7 @@ def main(argv=None) -> int:
                 continue
             print(f"      {path.name}  ({path.stat().st_size:,} bytes)")
             ledger[file_id] = {"submission": dir_name, "filename": path.name,
-                               "fetched_at": meta["_fetched_at"]}
+                               "fetched_at": fetched_at}
             new_files += 1
         fetched_subs += 1
 

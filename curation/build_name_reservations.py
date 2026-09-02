@@ -12,6 +12,8 @@
 #   by the date the submission arrived, so the site has to know what has arrived.
 # @input curation/intake/submissions/<dir>/metadata.json
 # @input curation/intake/submissions/<dir>/screen.json
+# @input curation/intake/submissions/review_ledger.json
+# @input curation/intake/submissions/submission_ids.json
 # @input docs/assets/data/lineage_sequences.json
 # @output docs/assets/data/reserved_names.json
 # @program python3
@@ -43,8 +45,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from malavi_curation.config import load_config, repo_root  # noqa: E402
-from malavi_curation.enrollment import claimed_names, name_suggestions  # noqa: E402
+from malavi_curation.enrollment import (claimed_names, name_suggestions,  # noqa: E402
+                                        submissions_with_returned_names)
 from malavi_curation.feeds import write_feed  # noqa: E402
+from malavi_curation.ledger import LedgerError  # noqa: E402
 
 # The complete public shape of one reservation. See the privacy note above.
 PUBLIC_FIELDS = ("name", "claimed")
@@ -118,6 +122,24 @@ def main(argv=None) -> int:
     # same list the public queue honors. A test submission must never hold a name.
     excluded = {e["id"]: e.get("reason", "") for e in (submissions_cfg.get("exclude") or [])}
 
+    # A declined or withdrawn submission has given its names back, and the review ledger
+    # is where that was decided. Until 2026-09-02 this program never read it, so a
+    # declined submission's names stayed on the public feed -- and blocked newcomers at
+    # the screen -- until somebody hand-edited the exclude list. A dormant submission is
+    # NOT in this set: it keeps its claim, and stays on the feed, by design.
+    #
+    # An unreadable ledger releases nothing. Advertising a reservation that was given
+    # back costs one submitter a name for a while; handing a name out twice is the
+    # failure this feed exists to prevent. Reported here, loudly, because the shared
+    # reader in malavi_curation.enrollment falls back to the same answer silently.
+    try:
+        returned = submissions_with_returned_names(inbox)
+    except (LedgerError, ValueError) as exc:
+        print(f"WARNING: could not read the review ledger ({exc}); no submission is "
+              f"treated as having returned its names, so a declined submission's names "
+              f"stay reserved until the ledger is readable.", file=sys.stderr)
+        returned = set()
+
     known, release = release_names(root)
     if not known:
         print("WARNING: no lineage index found; cannot tell a claim from a name "
@@ -139,6 +161,10 @@ def main(argv=None) -> int:
     for sub_dir in sorted(p for p in inbox.iterdir() if p.is_dir()) if inbox.is_dir() else []:
         if sub_dir.name in excluded:
             print(f"  skipped {sub_dir.name}: {excluded[sub_dir.name]}")
+            continue
+        if sub_dir.name in returned:
+            print(f"  skipped {sub_dir.name}: names returned (declined or withdrawn in "
+                  f"the review ledger)")
             continue
         meta_path = sub_dir / "metadata.json"
         if not meta_path.is_file():

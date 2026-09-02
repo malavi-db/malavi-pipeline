@@ -261,6 +261,15 @@ class TestArchive:
         assert "Atlantis" in report["unmapped_countries"]
         assert any("Atlantis" in w for w in report["warnings"])
 
+    def test_an_unmapped_country_in_a_vector_record_is_reported(self, tmp_path):
+        """The region flags come from vector records too, so their countries are checked
+        too. Until 2026-09-02 only host rows were, and a lineage known from a mosquito in
+        an unlisted country got no region and no warning."""
+        store = _store([_lineage("A")], vectors=[_vector("A", country="Lemuria")])
+        report = build_release(store, "2026-08-07", tmp_path, REGIONS)
+        assert "Lemuria" in report["unmapped_countries"]
+        assert any("Lemuria" in w for w in report["warnings"])
+
 
 class TestDiff:
     def _reference(self, tmp_path, rows):
@@ -325,6 +334,42 @@ class TestTheRecordChecks:
                  "references": [], "vector_records": [], "morpho_species": [],
                  "alt_names": []}
         assert not any("references.csv" in w for w in self._warnings(tmp_path, store))
+
+    def test_an_unpublished_citation_beside_its_published_sibling_is_reported(
+            self, tmp_path):
+        """One study under two names, the way publish_reference plus a late ingest makes
+        it: the renamed rows cite "Barrow et al 2027", the held submission's rows still
+        cite "Barrow et al unpubl", and the plain orphan check excuses the latter."""
+        store = {"lineages": [_lineage("L1")],
+                 "host_records": [dict(_host("L1", reference="Barrow et al unpubl"),
+                                       _source="MALAVI-SUB-2026-000123")],
+                 "references": [{"REFERENCE_NAME": "Barrow et al 2027",
+                                 "PUBLICATION_YEAR": "2027"}],
+                 "vector_records": [], "morpho_species": [], "alt_names": []}
+        warnings = self._warnings(tmp_path, store)
+        assert any("two names" in w and "Barrow et al unpubl" in w
+                   and "Barrow et al 2027" in w for w in warnings)
+
+    def test_the_seeds_same_author_coincidences_are_not_reported(self, tmp_path):
+        """The seed holds 20 unpublished names beside a same-author published paper, all
+        different studies. A warning firing twenty times per build is one nobody reads,
+        so only rows a submission brought are examined."""
+        store = {"lineages": [_lineage("L1")],
+                 "host_records": [dict(_host("L1", reference="Hellgren et al unpubl"),
+                                       _source="seed")],
+                 "references": [{"REFERENCE_NAME": "Hellgren et al 2004",
+                                 "PUBLICATION_YEAR": "2004"}],
+                 "vector_records": [], "morpho_species": [], "alt_names": []}
+        assert not any("two names" in w for w in self._warnings(tmp_path, store))
+
+    def test_an_unpublished_citation_with_no_published_sibling_is_not_reported(
+            self, tmp_path):
+        store = {"lineages": [_lineage("L1")],
+                 "host_records": [dict(_host("L1", reference="Barrow et al unpubl"),
+                                       _source="MALAVI-SUB-2026-000123")],
+                 "references": [], "vector_records": [], "morpho_species": [],
+                 "alt_names": []}
+        assert not any("two names" in w for w in self._warnings(tmp_path, store))
 
     def test_a_record_with_no_reference_at_all_is_reported(self, tmp_path):
         store = {"lineages": [_lineage("L1")],

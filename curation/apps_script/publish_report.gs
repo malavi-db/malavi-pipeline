@@ -118,6 +118,13 @@ var MAX_AGE_SECONDS = 600;
 // Apps Script will happily accept a huge body and then fail obscurely. Refuse early.
 var MAX_PDF_BYTES = 8 * 1024 * 1024;
 
+// How long this script remembers that a name confirmation went out, so that the same one
+// is not mailed twice. The retry that matters arrives the next day (BIOMIX records the
+// send only after the reply, so a request that timed out after the mail had gone is sent
+// again by the next run); 30 days covers a run that was not made for weeks.
+var CONFIRMATION_MEMORY_DAYS = 30;
+var CONFIRMATION_KEY_PREFIX = 'confirmed:';
+
 
 // ---------------------------------------------------------------------------------------
 // The endpoint
@@ -296,6 +303,18 @@ function confirmNames_(payload) {
     return { ok: false, error: 'no names to confirm' };
   }
 
+  // Sent once. BIOMIX writes its "already told them" record only after this reply
+  // arrives, so a request that timed out on its side AFTER the mail had gone is sent
+  // again by the next run -- and a second "your names are confirmed" invites the reader
+  // to look for a difference that is not there. The key is the submission, the address
+  // and the names, which is what makes two requests the same message; see
+  // confirmationKey_. Checked before composing anything, and recorded only after the
+  // mail has actually gone.
+  var key = confirmationKey_(payload);
+  if (alreadyConfirmed_(key)) {
+    return { ok: true, action: 'already_sent', notified: 0 };
+  }
+
   var corrections = payload.corrections || {};
   var changed = [];
   for (var proposed in corrections) {
@@ -387,7 +406,71 @@ function confirmNames_(payload) {
                      'MalAvi: your lineage names are confirmed (automatic message)',
                      lines.join('\n'),
                      { name: 'MalAvi', replyTo: 'malaviadmin@gmail.com' });
+  rememberConfirmation_(key);
   return { ok: true, action: 'emailed', notified: 1 };
+}
+
+
+/**
+ * The identity of one name confirmation, for the sent-once check in confirmNames_.
+ *
+ * An explicit `idempotency_key` in the payload wins, so that BIOMIX can name the message
+ * itself without this script changing again. Absent that, the key is derived from what
+ * makes two requests the same message: the submission, the address, and the sorted names.
+ * It is deliberately NOT built from `issued_at`, which is stamped fresh on every attempt
+ * and would therefore never match the retry this check exists to catch. A re-approval
+ * after a revision that changed a name produces a different key and is sent, which is
+ * right: it is a different message.
+ */
+function confirmationKey_(payload) {
+  var explicit = String(payload.idempotency_key || '').trim();
+  if (explicit) {
+    return CONFIRMATION_KEY_PREFIX + explicit;
+  }
+  var names = (payload.names || []).map(function (name) { return String(name); });
+  names.sort();
+  return CONFIRMATION_KEY_PREFIX +
+    String(payload.submission_id || '') + '|' +
+    String(payload.to || '').trim().toLowerCase() + '|' +
+    names.join(',');
+}
+
+
+/**
+ * Has this confirmation gone out within CONFIRMATION_MEMORY_DAYS?
+ *
+ * Script properties rather than CacheService: the cache is allowed to evict an entry at
+ * any time, and an eviction here means a second email. Properties persist until deleted;
+ * rememberConfirmation_ prunes the old ones so they do not accumulate forever.
+ */
+function alreadyConfirmed_(key) {
+  var sentAt = PropertiesService.getScriptProperties().getProperty(key);
+  if (!sentAt) {
+    return false;
+  }
+  var ageMs = Date.now() - Number(sentAt);
+  return ageMs >= 0 && ageMs < CONFIRMATION_MEMORY_DAYS * 24 * 3600 * 1000;
+}
+
+
+/**
+ * Record that a confirmation was mailed, and forget any older than the memory window.
+ *
+ * Called only after GmailApp.sendEmail returned: a key recorded before the send would,
+ * on a failed send, suppress the retry that is supposed to fix it.
+ */
+function rememberConfirmation_(key) {
+  var properties = PropertiesService.getScriptProperties();
+  var now = Date.now();
+  var cutoff = now - CONFIRMATION_MEMORY_DAYS * 24 * 3600 * 1000;
+  var all = properties.getProperties();
+  for (var name in all) {
+    if (all.hasOwnProperty(name) && name.indexOf(CONFIRMATION_KEY_PREFIX) === 0 &&
+        Number(all[name]) < cutoff) {
+      properties.deleteProperty(name);
+    }
+  }
+  properties.setProperty(key, String(now));
 }
 
 

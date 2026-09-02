@@ -17,8 +17,10 @@ from malavi_curation import public_feeds
 class _Recorder:
     """Stands in for subprocess.run, remembering what was asked and answering to script."""
 
-    def __init__(self, *, fail_on=(), stdout=""):
+    def __init__(self, *, fail_on=(), needs_person_on=(), stdout=""):
         self.fail_on = tuple(fail_on)
+        # Builders that write their feed and then exit 2: "done, but a person must act".
+        self.needs_person_on = tuple(needs_person_on)
         self.stdout = stdout
         self.calls = []
 
@@ -26,6 +28,14 @@ class _Recorder:
         self.calls.append(command)
         joined = " ".join(command)
         failed = any(marker in joined for marker in self.fail_on)
+        needs_person = any(marker in joined for marker in self.needs_person_on)
+        if needs_person:
+            return subprocess.CompletedProcess(
+                args=command, returncode=public_feeds.NEEDS_A_PERSON,
+                stdout="wrote reserved_names.json",
+                stderr="1 name(s) are claimed by more than one submission. "
+                       "The earliest claim is published; the other submitter(s) must be "
+                       "offered another name before their submission is approved.")
         return subprocess.CompletedProcess(
             args=command, returncode=1 if failed else 0,
             stdout="" if failed else self.stdout,
@@ -75,6 +85,30 @@ def test_a_failed_builder_stops_the_publish(recorder, capsys):
     assert public_feeds.refresh() is False
     assert "push_feeds.sh" not in rec.ran
     assert "not publishing" in capsys.readouterr().out
+
+
+def test_a_name_collision_is_reported_loudly_and_still_published(recorder, capsys):
+    """REGRESSION: build_name_reservations.py writes its feed and exits 2 on a collision,
+    by design -- the earliest claim is the right feed and the other submitter needs a
+    person. refresh() read every non-zero exit as a failed rebuild and withheld all three
+    feeds, queue.json included, so one stale collision silently froze the public queue."""
+    rec = recorder(needs_person_on=("build_name_reservations.py",))
+    assert public_feeds.refresh() is True
+    assert "push_feeds.sh" in rec.ran, "the feeds were written; they must be published"
+    out = capsys.readouterr().out
+    assert "needs a person" in out
+    assert "claimed by more than one submission" in out, (
+        "the builder's own message is the one a curator has to read")
+    assert "not publishing" not in out
+
+
+def test_a_builder_that_could_not_write_still_stops_the_publish(recorder):
+    """Exit 2 is the only exit that publishes. Any other non-zero exit still means the
+    feed on disk may be stale, and a half-updated set must not go out."""
+    rec = recorder(fail_on=("build_site_feeds.py",),
+                   needs_person_on=("build_name_reservations.py",))
+    assert public_feeds.refresh() is False
+    assert "push_feeds.sh" not in rec.ran
 
 
 def test_a_failed_publish_is_reported_and_swallowed(recorder, capsys):

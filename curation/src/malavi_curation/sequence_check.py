@@ -165,6 +165,9 @@ class SequenceCheck:
     mismatch_fraction: Optional[float] = None
     n_stop_codons: Optional[int] = None
     nearest: List[Tuple[str, int, int]] = field(default_factory=list)  # (name, dist, comparable)
+    # One of: "unchecked", "empty", "unplaceable", "known_lineage",
+    # "exact_match_low_coverage" (identical over every shared position, but fewer than
+    # MIN_COMPARABLE_TO_RANK of them -- see check_sequence) or "new_candidate".
     verdict: str = "unchecked"
     flags: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
@@ -268,7 +271,11 @@ def _neighbor_rank(d: int, c: int) -> Tuple[int, int, float, int]:
        deliberately so: "never report a known lineage as new" is the rule this function
        exists to enforce, and it is checked against ``nearest[0]``. Making an exact match
        compete on rate would risk a lineage MalAvi already holds being announced as novel,
-       which is the one outcome worse than a confusing neighbor list.
+       which is the one outcome worse than a confusing neighbor list. Note that winning
+       the *ranking* is not the same as earning the ``known_lineage`` *verdict*: the
+       verdict additionally requires the overlap to reach ``MIN_COMPARABLE_TO_RANK``
+       (see ``check_sequence``), so a thin exact match is still listed first, where a
+       curator can see it, without being called the same lineage.
     2. **Thinly covered references sort after well covered ones**, so a 20-position overlap
        with one mismatch cannot outrank a full-length relative. They are ordered after
        rather than dropped: a submission that only overlaps short references still gets a
@@ -381,8 +388,28 @@ def check_sequence(sequence: str, ref: Reference, label: str = "query",
 
     if res.nearest:
         best_name, best_dist, best_comp = res.nearest[0]
-        if best_dist == 0:
-            # Identical over every position both cover. Never report as new.
+        if best_dist == 0 and best_comp < MIN_COMPARABLE_TO_RANK:
+            # Identical over every position both cover -- but they cover too few. A
+            # partial barcode laid over a thinly covered reference can agree at 20
+            # positions and disagree nowhere, and that used to be reported as
+            # "identical over all 20 comparable positions": a known lineage, verdict
+            # settled. Twenty positions cannot settle anything. The same floor that
+            # decides whether a mismatch *rate* is trustworthy for ranking decides
+            # here whether an exact match is trustworthy as an identity: below it the
+            # answer is neither "known" nor "new" but "not enough sequence to say".
+            # The match still heads the neighbor list, so it is not hidden; it is
+            # simply not called the same lineage.
+            res.verdict = "exact_match_low_coverage"
+            res.flags.append("exact_match_over_too_few_positions")
+            res.notes.append(
+                f"Identical to {best_name} over the {best_comp} positions both cover, "
+                f"but that overlap is too short to call it the same lineage: at least "
+                f"{MIN_COMPARABLE_TO_RANK} comparable positions are needed. A longer "
+                f"read covering more of the barcode is needed before this can be "
+                f"called {best_name} or anything new.")
+        elif best_dist == 0:
+            # Identical over every position both cover, and enough of them to trust.
+            # Never report as new.
             res.verdict = "known_lineage"
             res.flags.append("exact_match_to_known_lineage")
             res.notes.append(

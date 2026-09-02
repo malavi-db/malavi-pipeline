@@ -427,3 +427,159 @@ def test_a_reopening_reason_is_not_the_maintainers_to_choose(close_submission):
     assert not code and "reopened" in complaint
     code, complaint = close_submission.reason_for("reopen", "")
     assert code == close_submission.REOPEN_REASON and not complaint
+
+
+# ------------------------------------------------ reopening over a name issued elsewhere
+#
+# Reopening re-claims the names a closed submission held. If somebody else was granted one
+# of them meanwhile, this program used to print "verify them against the reservation
+# store" and carry on -- a maintainer who did not would have revived a claim on a name
+# another submitter had already been told was theirs. Found by the 2026-09-02 review.
+
+def _newcomer(entries, name, sid="MALAVI-SUB-2026-000002"):
+    """A later submission, live and holding ``name``."""
+    entry = ledger.ensure_entry(entries, sid, "A", "2026-09-15T00:00:00+00:00")
+    entry.reserved_names = [name]
+    ledger.transition(entry, "ready_for_review", "intake", at="2026-09-15T12:00:00+00:00")
+    return entry
+
+
+def test_reopening_is_refused_when_another_submission_now_holds_the_name(
+        close_submission, registry_path):
+    entries, entry = build("held", names=("NECMON01",), registry_path=registry_path)
+    close_submission.close(entry, "decline", "data_not_verifiable", actor="maintainer",
+                           at="2026-09-01T00:00:00+00:00", config=CONFIG)
+    _newcomer(entries, "NECMON01")
+
+    moved, lines = close_submission.close(entry, "reopen", close_submission.REOPEN_REASON,
+                                          actor="maintainer",
+                                          at="2026-11-01T00:00:00+00:00", config=CONFIG,
+                                          entries=entries)
+
+    assert not moved
+    text = "\n".join(lines)
+    assert "REFUSED" in text
+    assert "MALAVI-SUB-2026-000002" in text and "NECMON01" in text, \
+        "the operator's next step is to look at the other submission, so name it"
+    assert entry.state == "declined" and entry.name_state == "released", "nothing moved"
+
+
+def test_a_dormant_holder_blocks_a_reopening_too(close_submission, registry_path):
+    """A dormant submission keeps its names on purpose, so it counts as holding them."""
+    entries, entry = build("held", names=("NECMON01",), registry_path=registry_path)
+    close_submission.close(entry, "decline", "data_not_verifiable", actor="maintainer",
+                           at="2026-09-01T00:00:00+00:00", config=CONFIG)
+    sleeper = _newcomer(entries, "NECMON01")
+    ledger.transition(sleeper, "in_review", "lead", at="2026-09-16T00:00:00+00:00")
+    ledger.transition(sleeper, "awaiting_submitter", "lead", at="2026-09-17T00:00:00+00:00")
+    ledger.transition(sleeper, "dormant", "promoter", at="2026-11-20T00:00:00+00:00",
+                      reason="submitter_unresponsive", config=CONFIG)
+
+    moved, lines = close_submission.close(entry, "reopen", close_submission.REOPEN_REASON,
+                                          actor="maintainer",
+                                          at="2026-12-01T00:00:00+00:00", config=CONFIG,
+                                          entries=entries)
+    assert not moved
+    assert "MALAVI-SUB-2026-000002" in "\n".join(lines)
+
+
+def test_a_reopening_the_other_holder_has_since_declined_goes_through(
+        close_submission, registry_path):
+    entries, entry = build("held", names=("NECMON01",), registry_path=registry_path)
+    close_submission.close(entry, "decline", "data_not_verifiable", actor="maintainer",
+                           at="2026-09-01T00:00:00+00:00", config=CONFIG)
+    other = _newcomer(entries, "NECMON01")
+    ledger.transition(other, "in_review", "lead", at="2026-09-16T00:00:00+00:00")
+    ledger.transition(other, "declined", "lead", at="2026-09-17T00:00:00+00:00",
+                      reason="duplicate")
+
+    moved, _ = close_submission.close(entry, "reopen", close_submission.REOPEN_REASON,
+                                      actor="maintainer", at="2026-11-01T00:00:00+00:00",
+                                      config=CONFIG, entries=entries)
+    assert moved and entry.state == "in_review"
+
+
+def test_a_refused_reopening_exits_nonzero_from_the_command_line(
+        close_submission, registry_path, tmp_path, monkeypatch, capsys):
+    inbox = _workspace(close_submission, monkeypatch, tmp_path)
+    entries, entry = build("held", names=("NECMON01",), registry_path=registry_path)
+    close_submission.close(entry, "decline", "data_not_verifiable", actor="maintainer",
+                           at="2026-09-01T00:00:00+00:00", config=CONFIG)
+    _newcomer(entries, "NECMON01")
+    ledger.save(inbox, entries)
+
+    code = close_submission.main(["--submission", SUBMISSION, "--reopen", "--apply",
+                                  "--no-publish"])
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "REFUSED" in out and "MALAVI-SUB-2026-000002" in out
+    assert ledger.load(inbox)[SUBMISSION].state == "declined", "nothing was written"
+
+
+# ------------------------------------------------- the retract command, where it is needed
+#
+# Rows enter the store at approval. A submission withdrawn or declined after that blocks
+# every release build until `ingest_submissions.py --retract` takes them out, and until
+# 2026-09-02 the only place that said so was RUNBOOK row 12b.
+
+@pytest.mark.parametrize("action, reason", [
+    ("withdraw", "withdrawn_by_submitter"),
+    ("decline", "duplicate"),
+])
+def test_closing_an_ingested_submission_prints_the_retract_command(
+        close_submission, registry_path, action, reason):
+    _, entry = build("held", registry_path=registry_path)
+    moved, lines = close_submission.close(entry, action, reason, actor="maintainer",
+                                          at="2026-09-01T00:00:00+00:00", config=CONFIG,
+                                          rows_in_store=True)
+    assert moved
+    text = "\n".join(lines)
+    assert "block every release build" in text
+    assert "curation/ingest_submissions.py --release " in text
+    assert f"--retract {SUBMISSION} --apply" in text
+
+
+def test_no_retract_command_when_nothing_was_ingested(close_submission, registry_path):
+    _, entry = build("held", registry_path=registry_path)
+    _, lines = close_submission.close(entry, "withdraw", "withdrawn_by_submitter",
+                                      actor="maintainer", at="2026-09-01T00:00:00+00:00",
+                                      config=CONFIG, rows_in_store=False)
+    assert "--retract" not in "\n".join(lines)
+
+
+def test_the_retract_command_is_the_one_ingest_submissions_accepts(close_submission):
+    """The printed line has to parse in the program it is meant for, or it is a runbook
+    row in a different place. --release is required there even for a retraction."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_ingest_submissions", repo_root() / "curation" / "ingest_submissions.py")
+    ingest = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ingest)
+
+    command = close_submission.retract_command(SUBMISSION)
+    argv = command.split()
+    assert argv[:2] == [".venv/bin/python", "curation/ingest_submissions.py"]
+    parsed = ingest.parse_args(argv[2:])
+    assert parsed.retract == [SUBMISSION]
+    assert parsed.apply is True
+    assert parsed.submission == []
+
+
+def test_rows_in_store_is_read_from_the_store_itself(close_submission, tmp_path):
+    from malavi_curation.release_store import TABLES, store_dir, write_store
+
+    store = {name: [] for name in TABLES}
+    store["host_records"] = [{
+        "LINEAGE_NAME": "TUMIG19", "SPECIES_NAME": "Turdus migratorius",
+        "SITE_NAME": "Newark", "REFERENCE_NAME": "A Person 2026",
+        "RECORD_ID": "HST-000001", "_source": SUBMISSION, "_added": "2026-09-01",
+    }]
+    write_store(store_dir(tmp_path), store)
+
+    assert close_submission.submission_rows_in_store(SUBMISSION, root=tmp_path)
+    assert not close_submission.submission_rows_in_store("MALAVI-SUB-2026-000009",
+                                                         root=tmp_path)
+    # A fresh checkout has no store; that is "no", not an error.
+    assert not close_submission.submission_rows_in_store(SUBMISSION,
+                                                         root=tmp_path / "elsewhere")

@@ -126,6 +126,13 @@ LIVE_STATES = ("received", "screening_failed", "ready_for_review", "in_review", 
 # finished, and coming back has to undo the bookkeeping that finishing it did.
 CLOSED_STATES = ("declined", "dormant")
 
+# States in which a submission holds its reserved names against every other submission.
+# Every live state, because a claim counts from the moment it arrives; `released`, because
+# a published name can never be given back; and `dormant`, which is not live but keeps its
+# names on purpose (see the note in :func:`transition`). `declined` and `withdrawn` are the
+# two states that give names back, and they are the two left out.
+NAME_HOLDING_STATES = LIVE_STATES + ("released", "dormant")
+
 # The lifecycle of a reserved lineage name, tracked alongside the submission because the
 # two can diverge: a declined submission's names go back, an approved one's are confirmed
 # only when a release actually ships, and a dormant one goes on holding its claim
@@ -263,6 +270,14 @@ class Correction:
     change: str = ""              # what should change, in the curator's words
     approved_by: str = ""         # lead curator id; empty until approved
     approved_at: str = ""
+    # The lead's own consultation record, kept apart from `consulted` above, which is who
+    # confirmed the correction to the curator who PROPOSED it. The form requires the lead
+    # to name who they discussed the approval with, and until 2026-09-02 that answer was
+    # validated by the parser and then dropped on the way to the ledger -- the same
+    # accountability data an Override keeps (who, when, and what was concluded).
+    approval_consulted: List[str] = field(default_factory=list)
+    approval_consulted_on: str = ""
+    approval_note: str = ""       # what the discussion concluded; free text, ledger only
     applied_at: str = ""          # set when it becomes a revision
 
     @property
@@ -818,6 +833,54 @@ def agreed_names(entry: Entry) -> List[str]:
     return sorted({entry.name_corrections.get(name, name) for name in entry.reserved_names})
 
 
+def names_held_elsewhere(entries: Dict[str, Entry], entry: Entry) -> Dict[str, List[str]]:
+    """Which of this submission's agreed names another submission also holds.
+
+    Returns ``{name: [other submission ids]}``, empty when every name is free. "Holds"
+    means the other entry is in :data:`NAME_HOLDING_STATES` and the name is among its
+    :func:`agreed_names` -- corrections applied on both sides, so a submission offered
+    TUMIG25 in place of TUMIG06 is compared on TUMIG25.
+
+    This check is compared against the *ledger*, and it exists because the other check --
+    ``store_ingest.colliding_lineages``, against the record store -- runs only at ingest.
+    Two submissions claiming one name could therefore both be approved, both have their
+    submitter emailed "your name is confirmed", and only collide when the second was
+    ingested, after both people had put the name in a manuscript. Found 2026-09-02.
+    """
+    wanted = set(agreed_names(entry))
+    if not wanted:
+        return {}
+    clashes: Dict[str, List[str]] = {}
+    for other_id, other in sorted(entries.items()):
+        if other_id == entry.submission_id or other.state not in NAME_HOLDING_STATES:
+            continue
+        for name in sorted(wanted.intersection(agreed_names(other))):
+            clashes.setdefault(name, []).append(other_id)
+    return clashes
+
+
+def describe_name_clashes(clashes: Dict[str, List[str]]) -> str:
+    """``TUMIG19 (held by MALAVI-SUB-2026-000002), ...`` -- one phrasing for every caller."""
+    return ", ".join(f"{name} (held by {', '.join(holders)})"
+                     for name, holders in sorted(clashes.items()))
+
+
+def refuse_if_names_held_elsewhere(entries: Dict[str, Entry], entry: Entry,
+                                   doing: str) -> None:
+    """Raise :class:`LedgerError` naming the other submission if any agreed name is taken.
+
+    ``doing`` completes the sentence "cannot ...": "be approved", "be reopened",
+    "have its names confirmed". The message names the holder because the operator's next
+    step is to look at that submission, not this one.
+    """
+    clashes = names_held_elsewhere(entries, entry)
+    if clashes:
+        raise LedgerError(
+            f"{entry.submission_id} cannot {doing}: another submission already holds "
+            f"{describe_name_clashes(clashes)}. Two submissions cannot hold one lineage "
+            f"name; resolve which claim stands (name_corrections, or decline one) first.")
+
+
 def author_of_revision(entry: Entry, revision: Optional[int] = None) -> str:
     """The curator who typed a revision, or "" if the submitter produced it."""
     target = entry.revision if revision is None else revision
@@ -1113,7 +1176,9 @@ def record_correction(entry: Entry, address: str, change: str, authority: str,
 
 def approve_correction(entry: Entry, correction_id: str, address: str,
                        at: Optional[str] = None,
-                       registry_path: Optional[Path] = None) -> Correction:
+                       registry_path: Optional[Path] = None,
+                       consulted: Optional[Iterable[str]] = None,
+                       consulted_on: str = "", note: str = "") -> Correction:
     """A lead agrees a proposed correction may be applied.
 
     Lead-only for the same reason clearing another curator's objection is: a correction
@@ -1121,8 +1186,17 @@ def approve_correction(entry: Entry, correction_id: str, address: str,
     be able to describe a change and have it applied without a second view. The lead may not
     approve their own — that would be exactly the single point of judgment the rule exists
     to prevent.
+
+    ``consulted``, ``consulted_on`` and ``note`` are the lead's consultation record: who
+    they discussed the approval with, when, and what was concluded. Stored on the
+    correction and in the history event, as :func:`override_hold` stores the same data.
+    Not required at the write, unlike an override's, because the verdict form's parser
+    already refuses an approval that names nobody and the maintainer's ``apply_corrections``
+    path records the consultation elsewhere; what this function guarantees is that a record
+    which reaches it is kept rather than dropped.
     """
     stamp = _validate_stamp(at or now_utc(), "correction approval timestamp")
+    consulted_list = [str(c).strip() for c in (consulted or []) if str(c).strip()]
     curator = resolve(address, registry_path)
     if curator is None or not curator.is_lead:
         raise LedgerError(
@@ -1141,8 +1215,13 @@ def approve_correction(entry: Entry, correction_id: str, address: str,
                     f"approve it. Another lead must, or another curator must propose it.")
             correction.approved_by = curator.id
             correction.approved_at = stamp
+            correction.approval_consulted = consulted_list
+            correction.approval_consulted_on = consulted_on.strip()
+            correction.approval_note = note.strip()
             entry.history.append({"at": stamp, "event": "correction_approved",
-                                  "actor": curator.id, "correction_id": correction_id})
+                                  "actor": curator.id, "correction_id": correction_id,
+                                  "consulted": consulted_list,
+                                  "consulted_on": consulted_on.strip()})
             return correction
     raise LedgerError(f"{entry.submission_id} has no correction {correction_id!r}.")
 
@@ -1244,7 +1323,8 @@ def _find_verdict(entry: Entry, verdict_id: str) -> Verdict:
 # --------------------------------------------------------------------------------------
 
 def transition(entry: Entry, to_state: str, actor: str, at: Optional[str] = None,
-               reason: str = "", config: Optional[Dict[str, Any]] = None) -> None:
+               reason: str = "", config: Optional[Dict[str, Any]] = None,
+               entries: Optional[Dict[str, Entry]] = None) -> None:
     """Move a submission to a new state, refusing moves the rules do not allow.
 
     **Every blocking rule is re-checked here**, at the moment of the write, and that
@@ -1256,6 +1336,12 @@ def transition(entry: Entry, to_state: str, actor: str, at: Optional[str] = None
 
     Side effects are confined to the clocks and the name lifecycle, which have to move with
     the state or they drift out of agreement with it.
+
+    ``entries`` is the whole ledger, and passing it turns on the one rule that cannot be
+    checked from a single entry: on the way into ``approved``, and on a reopening, no
+    agreed name may already be held by another submission (:func:`names_held_elsewhere`).
+    It is optional only because callers that move a submission *away* from holding a name
+    have nothing to check; a caller approving or reopening should always pass it.
     """
     if to_state not in STATES:
         raise LedgerError(f"Unknown state {to_state!r}.")
@@ -1277,6 +1363,15 @@ def transition(entry: Entry, to_state: str, actor: str, at: Optional[str] = None
         approvable, why_not = is_approvable(entry)
         if not approvable:
             raise LedgerError(f"{entry.submission_id} cannot be {to_state}: {why_not}.")
+
+    # A name can be held by one submission only, and this is where that is enforced for the
+    # two moves that put a claim into force: approval, and the reopening of a closed
+    # submission that re-claims names it gave back (or, if dormant, never gave back). It
+    # runs before anything is mutated, so a refusal leaves the entry exactly as it was.
+    reopening = entry.state in CLOSED_STATES and to_state in LIVE_STATES
+    if entries is not None and (to_state == "approved" or reopening):
+        refuse_if_names_held_elsewhere(
+            entries, entry, "be reopened" if reopening else "be approved")
 
     if to_state == "released":
         # The publish hold is a real precondition of releasing, not a suggestion the

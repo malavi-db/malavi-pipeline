@@ -61,7 +61,9 @@ from malavi_curation.config import repo_root                        # noqa: E402
 from malavi_curation.release_store import (                         # noqa: E402
     SEED, TABLES, assign_ids, read_store, store_dir, write_store,
 )
-from malavi_curation.submission_id import directory_for, is_opaque  # noqa: E402
+from malavi_curation.submission_id import (                          # noqa: E402
+    directory_for, is_opaque, submission_id_for,
+)
 
 # Writing nothing is the default. This writes the authoritative MalAvi, from files a
 # submitter sent, on the strength of a decision recorded elsewhere. The operator should
@@ -108,7 +110,9 @@ def resolve_directory(inbox: Path, submission_id: str) -> Optional[Path]:
 
     The ledger is keyed by the minted opaque id while the directory is named after the
     submitter, so an opaque id goes through the reverse lookup. A directory name passed
-    directly is honored too, which is what a maintainer working from the filesystem has.
+    directly is honored too -- but by the time this runs, :func:`as_submission_ids` has
+    already turned every directory name on the command line into its opaque id, because
+    the release gate and the store both speak only in ids (see that function).
     """
     name = directory_for(inbox, submission_id) if is_opaque(submission_id) \
         else submission_id
@@ -116,6 +120,42 @@ def resolve_directory(inbox: Path, submission_id: str) -> Optional[Path]:
         return None
     path = inbox / name
     return path if path.is_dir() else None
+
+
+def as_submission_ids(inbox: Path, requested: Sequence[str]
+                      ) -> Tuple[List[str], List[str]]:
+    """Every name on the command line as the opaque id the ledger and the store use.
+
+    Returns ``(ids, refusals)``. A maintainer working from the filesystem has the
+    directory name -- ``20260801T120000_A_Person`` -- while the ledger, the release gate
+    and the ``_source`` column all carry ``MALAVI-SUB-2026-000123``. Until this existed a
+    directory name was passed to ``release_gate.admissibility`` as it was typed, which
+    refused it with "the review ledger has no such submission" before the directory lookup
+    ever ran, so the documented convenience never worked.
+
+    The translation is done here, once, before anything consults the gate, rather than
+    inside :func:`resolve_directory`, for a second reason: whatever string reaches the
+    gate is also what gets stamped into ``_source`` on every ingested row, and a directory
+    name there would be a submitter's name written into the store.
+
+    ``mint=False``: this is a lookup, never a mint. A directory that has no id has not
+    been through the intake, and issuing one from here would give it an identity nothing
+    else knows about. Such a name is refused with the reason, not guessed at.
+    """
+    ids: List[str] = []
+    refusals: List[str] = []
+    for name in requested:
+        if is_opaque(name):
+            ids.append(name)
+            continue
+        minted = submission_id_for(inbox, name, mint=False)
+        if minted is None:
+            refusals.append(
+                f"{name}: neither a submission id nor a directory that the intake has "
+                f"minted an id for (see submission_ids.json). Nothing to look up.")
+            continue
+        ids.append(minted)
+    return ids, refusals
 
 
 def candidates(entries: Optional[Dict[str, ledger.Entry]],
@@ -336,13 +376,34 @@ def main(argv=None) -> int:
     print(f"release  : {args.release}  (written to _added)")
     print(f"ledger   : {'absent' if entries is None else f'{len(entries)} submission(s)'}")
 
+    if args.retract and args.submission:
+        print("error: --retract takes rows out and --submission puts them in. Run "
+              "them separately, so the store is never both at once.", file=sys.stderr)
+        return 1
+
+    # Directory names become opaque ids HERE, before the gate sees either list. Every
+    # later comparison in this program -- the gate, `submission_id not in args.submission`,
+    # the _source stamp -- is in ids, so the translated list replaces the typed one.
+    args.submission, unknown = as_submission_ids(inbox, args.submission)
+    args.retract, unknown_retract = as_submission_ids(inbox, args.retract)
+    unknown.extend(unknown_retract)
+    if unknown and not (args.submission or args.retract):
+        # Every name typed was untranslatable. Stopping here matters: an empty
+        # --submission list means "every approved submission", and falling through would
+        # turn a typo into a full ingest the operator never asked for.
+        for line in unknown:
+            print(f"REFUSED {line}")
+        print("\nNothing to do: none of the names given could be looked up.")
+        return 2
+
     if args.retract:
-        if args.submission:
-            print("error: --retract takes rows out and --submission puts them in. Run "
-                  "them separately, so the store is never both at once.", file=sys.stderr)
-            return 1
         print()
-        return retract_submissions(store, args.retract, entries, records, args.apply)
+        code = retract_submissions(store, args.retract, entries, records, args.apply)
+        # A name that could not be looked up is a refusal like any other on this path,
+        # reported the way retract_submissions reports its own.
+        for line in unknown:
+            print(f"  REFUSED  {line}", file=sys.stderr)
+        return 3 if unknown and code == 0 else code
 
     wanted = candidates(entries, already, args.submission)
     if not wanted:
@@ -350,7 +411,9 @@ def main(argv=None) -> int:
         return 0
 
     ingested: List[str] = []
-    refused: List[str] = []
+    # The names that could not be translated are refusals of this run too: they were
+    # asked for and nothing will be done about them, and a clean exit would say otherwise.
+    refused: List[str] = list(unknown)
     blanked: List[Dict[str, str]] = []
     print()
     for submission_id in wanted:

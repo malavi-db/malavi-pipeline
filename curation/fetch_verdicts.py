@@ -247,22 +247,30 @@ def save_applied(path: Path, applied: Dict[str, Dict[str, Any]]) -> None:
 # ======================================================================================
 
 def _advance_after_verdict(entry: ledger.Entry, verdict: str, actor: str,
-                           at: str, config: Dict[str, Any]) -> Tuple[str, str]:
+                           at: str, config: Dict[str, Any],
+                           entries: Optional[Dict[str, ledger.Entry]] = None
+                           ) -> Tuple[str, str]:
     """Move the submission's state to match a verdict just recorded.
 
     Returns ``(moved_to, why_not)`` — exactly one of which is non-empty. Never raises:
     the verdict is already in the ledger by the time this is called, and a state that
     could not move is a thing to report, not a reason to lose the verdict.
 
+    ``entries`` is the whole ledger, handed to ``transition`` so that an approval is
+    refused when another submission already holds one of this one's names.
+
     See this module's docstring for why "Reject" lands on ``held`` rather than ``declined``.
     """
     moved: List[str] = []
+    refusal: List[str] = []
 
     def attempt(to_state: str) -> bool:
         """Try one transition; report failure rather than raising."""
         try:
-            ledger.transition(entry, to_state, actor=actor, at=at, config=config)
-        except ledger.LedgerError:
+            ledger.transition(entry, to_state, actor=actor, at=at, config=config,
+                              entries=entries)
+        except ledger.LedgerError as exc:
+            refusal.append(str(exc))
             return False
         moved.append(to_state)
         return True
@@ -284,7 +292,13 @@ def _advance_after_verdict(entry: ledger.Entry, verdict: str, actor: str,
             # the parse and here still wins.
             if not attempt("approved"):
                 _, why_not = ledger.is_approvable(entry)
-                return "", (why_not or f"cannot approve from state {entry.state!r}")
+                # is_approvable knows about objections; it does not know about a name
+                # another submission holds. When that is what stopped the approval, the
+                # ledger's own message -- which names the other submission -- is the one
+                # to report, or the outcome says "applied" about an approval that was
+                # refused for a reason nobody can see.
+                return "", (why_not or (refusal[-1] if refusal else "")
+                            or f"cannot approve from state {entry.state!r}")
         else:
             # An approval that changed nothing is the single most misleading outcome this
             # program can produce: the curator believes they approved it. Say which rule
@@ -463,7 +477,8 @@ def apply_action(entries: Dict[str, ledger.Entry], action: verdicts.Action,
                         "detail": "not attributable to an active curator; see "
                                   "entry.unrecognized in the review ledger"}
             moved, why_not = _advance_after_verdict(
-                entry, action.verdict, actor=stored.curator, at=action.at, config=config)
+                entry, action.verdict, actor=stored.curator, at=action.at, config=config,
+                entries=entries)
             return {**base, "status": "applied", "verdict": action.verdict,
                     "verdict_id": stored.id, "state": entry.state,
                     "curator": stored.curator,
@@ -516,9 +531,14 @@ def apply_action(entries: Dict[str, ledger.Entry], action: verdicts.Action,
                     "detail": "proposed; a lead must approve it before it is applied"}
 
         if action.kind == "correction_approval":
+            # The consultation the form required of the lead goes through to the ledger.
+            # The approval page asks who was consulted and what was concluded, but not
+            # when, so consulted_on is left empty here; the response timestamp is the
+            # nearest thing to a date and is already recorded as `at`.
             correction = ledger.approve_correction(
                 entry, action.target_id, action.address, at=action.at,
-                registry_path=registry_path)
+                registry_path=registry_path, consulted=action.consulted,
+                note=action.reason_text)
             return {**base, "status": "applied", "correction_id": correction.id,
                     "state": entry.state,
                     "detail": f"approved by {correction.approved_by}; the maintainer "
@@ -586,8 +606,14 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # --- get the rows ---------------------------------------------------------------
     if arguments.from_csv is not None:
-        rows = list(csv.DictReader(io.StringIO(
-            arguments.from_csv.read_text(encoding="utf-8-sig"))))
+        # Through read_rows, exactly as the live sheet is, so a saved export with a
+        # repeated header is refused here too. Until 2026-09-02 this path used
+        # csv.DictReader directly and would have quietly read the rightmost column.
+        try:
+            rows = read_rows(arguments.from_csv.read_text(encoding="utf-8-sig"))
+        except DuplicateColumns as exc:
+            print(f"\n{exc}", file=sys.stderr)
+            return 1
         print(f"responses: {len(rows)} row(s) from {arguments.from_csv}")
     else:
         if not sheet_id:

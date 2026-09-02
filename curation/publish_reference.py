@@ -14,6 +14,7 @@
 # @program python3
 # @critical-var TABLES_WITH_REFERENCES
 # @critical-flag publish_reference.py "" --apply
+# @critical-flag publish_reference.py "" --allow-embargoed-behind
 """Turn an unpublished reference into a published one.
 
     curation/publish_reference.py "Barrow et al unpubl" "Barrow et al 2027" \\
@@ -47,6 +48,15 @@ For a study whose records are **entirely** embargoed there is nothing here to re
 this program says so and stops rather than adding the reference row: doing that would make
 the real rename refuse later, when the published name already has a row. The order in that
 case is ``lift_embargo.py``, then ``ingest_submissions.py``, then this.
+
+A study that is **partly** embargoed -- some records in the store, some submissions still
+held -- is refused for the same reason, in the same order. Until 2026-09-02 it took the
+opposite order without a word: the stored rows were renamed and the held submissions'
+embargoes lifted, but their workbooks still said ``"<Authors> unpubl"`` and the ingest
+copies the ``Reference`` cell verbatim, so the study landed in the store under two names
+and the release build's orphan check, which excuses unpublished names, never saw it.
+``--allow-embargoed-behind`` takes the old order anyway, for a maintainer who will rename
+the held submissions' rows by hand after they are ingested.
 
 Why it refuses on a collision
 -----------------------------
@@ -231,6 +241,20 @@ def lift_embargoes(inbox: Path, submission_ids: List[str], new_name: str,
     return lines
 
 
+def print_lift_first_order(old: str) -> None:
+    """The three steps that publish a study some of whose submissions are still embargoed.
+
+    Printed by both refusals that need it -- the fully embargoed study and the partly
+    embargoed one -- so the two cannot drift into giving different instructions.
+    """
+    print("Do this instead:\n")
+    print(f"  1. .venv/bin/python curation/lift_embargo.py \\\n"
+          f"         --reference {old!r} --apply")
+    print("  2. .venv/bin/python curation/ingest_submissions.py "
+          "--release <date> --apply")
+    print("  3. re-run this command")
+
+
 def _rows_citing(rows: List[Dict[str, str]], name: str) -> List[Dict[str, str]]:
     """Every row whose REFERENCE_NAME is exactly this study, compared on stripped text."""
     return [row for row in rows if (row.get("REFERENCE_NAME") or "").strip() == name]
@@ -285,6 +309,13 @@ def main(argv=None) -> int:
                              "build.")
     parser.add_argument("--apply", action="store_true",
                         help="write the changes. Without this, nothing is modified.")
+    parser.add_argument("--allow-embargoed-behind", action="store_true",
+                        help="rename now even though submissions behind this study are "
+                             "still embargoed and not yet ingested. Off by default: their "
+                             "workbooks still cite the old name, and an ingest after the "
+                             "rename would put the study in the store under two names. "
+                             "The supported order is lift_embargo.py, then "
+                             "ingest_submissions.py, then this.")
     parser.add_argument("--allow-published-old-name", action="store_true",
                         help="rename a reference that is not marked unpubl. Off by "
                              "default: this program exists for the unpublished case, and "
@@ -377,17 +408,33 @@ def main(argv=None) -> int:
                   f"the reference\nrow ahead of them -- doing so would make the real rename "
                   f"refuse later.\n")
             print(f"Held for this study: {', '.join(held)}\n")
-            print("Do this instead:\n")
-            print(f"  1. .venv/bin/python curation/lift_embargo.py \\\n"
-                  f"         --reference {old!r} --apply")
-            print("  2. .venv/bin/python curation/ingest_submissions.py "
-                  "--release <date> --apply")
-            print(f"  3. re-run this command")
+            print_lift_first_order(old)
             return 1
         print(f"\nNOTHING CITES {old!r}. Check the spelling -- reference names are "
               f"compared exactly.")
         for line in embargo_notes:
             print(line)
+        return 1
+
+    if held and not args.allow_embargoed_behind:
+        # The partly-embargoed study: the rows in the store could be renamed, but the
+        # held submissions were never ingested and their workbooks still say the old
+        # name. Renaming now and lifting their embargo -- which is what the write path
+        # below does -- would have their later ingest bring the same study in under the
+        # unpublished name, beside the rows just renamed to the published one. So the
+        # order is the same as for the fully-embargoed study, and this refuses before the
+        # dry-run/apply split so a dry run shows the refusal too.
+        print(f"\nREFUSING TO RENAME AHEAD OF THE EMBARGOED SUBMISSIONS. {total} row(s) "
+              f"in the store cite {old!r},\nbut {len(held)} submission(s) behind this "
+              f"study were never ingested because they are still\nembargoed: "
+              f"{', '.join(held)}. Their workbooks still say {old!r}, and an ingest "
+              f"copies\nthe Reference cell verbatim, so renaming now would leave this "
+              f"study in the store under\ntwo names once they are ingested.\n")
+        for line in embargo_notes:
+            print(line)
+        print_lift_first_order(old)
+        print(f"\nOr, to rename now and fix those submissions' rows by hand after they "
+              f"are ingested,\npass --allow-embargoed-behind.")
         return 1
 
     if problems:

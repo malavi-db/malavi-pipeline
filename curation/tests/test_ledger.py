@@ -1187,3 +1187,123 @@ def test_a_closing_note_stays_out_of_the_decision_record(entry, registry):
     serialized = str(record)
     assert "Barrow" not in serialized, "the note must not reach the committed record"
     assert "duplicate" in serialized
+
+
+# ------------------------------------------------- one name, one submission
+#
+# Two submissions claiming the same lineage name could both be approved, and both
+# submitters told "your name is confirmed", because the only collision check ran against
+# the record store at ingest -- after both emails. Found by the 2026-09-02 review.
+
+def _claiming(registry, sid, name):
+    """A submission in review, holding ``name``, with an approval standing on it."""
+    entry = ensure_entry({}, sid, "A", "2026-08-01T00:00:00+00:00")
+    entry.reserved_names = [name]
+    to_review(entry)
+    approve(entry, registry, at="2026-08-05T00:00:00+00:00")
+    return entry
+
+
+def test_an_approval_is_refused_when_another_submission_holds_the_name(registry):
+    """REGRESSION: the second approval went through and named nobody."""
+    entries, _first = _approved(registry)             # MALAVI-SUB-2026-000002 holds TUMIG19
+    second = _claiming(registry, "MALAVI-SUB-2026-000003", "TUMIG19")
+    entries[second.submission_id] = second
+
+    with pytest.raises(LedgerError, match="held by MALAVI-SUB-2026-000002"):
+        transition(second, "approved", "alice", at="2026-08-06T00:00:00+00:00",
+                   entries=entries)
+    # Refused before anything moved: no state change, no publish hold started.
+    assert second.state == "in_review"
+    assert second.approved_at is None
+    assert second.name_state == "claimed"
+
+
+def test_a_dormant_submission_still_holds_its_name_against_a_newcomer(registry):
+    """Dormancy keeps the claim by design (2026-08-20), so a sleeper blocks an approval."""
+    entries = {}
+    sleeper = ensure_entry(entries, "MALAVI-SUB-2026-000002", "A",
+                           "2026-08-01T00:00:00+00:00")
+    sleeper.reserved_names = ["TUMIG19"]
+    to_review(sleeper)
+    transition(sleeper, "awaiting_submitter", "lead", at="2026-08-03T00:00:00+00:00")
+    transition(sleeper, "dormant", "promoter", at="2026-10-03T00:00:00+00:00",
+               reason="submitter_unresponsive")
+    assert sleeper.state == "dormant" and sleeper.name_state == "claimed"
+
+    second = _claiming(registry, "MALAVI-SUB-2026-000003", "TUMIG19")
+    entries[second.submission_id] = second
+    with pytest.raises(LedgerError, match="held by MALAVI-SUB-2026-000002"):
+        transition(second, "approved", "alice", at="2026-10-06T00:00:00+00:00",
+                   entries=entries)
+
+
+def test_a_declined_submission_has_given_its_name_back(registry):
+    """The two states that release a name must not block: that is what declining is for."""
+    entries = {}
+    loser = ensure_entry(entries, "MALAVI-SUB-2026-000002", "A",
+                         "2026-08-01T00:00:00+00:00")
+    loser.reserved_names = ["TUMIG19"]
+    to_review(loser)
+    transition(loser, "declined", "lead", at="2026-08-03T00:00:00+00:00",
+               reason="duplicate")
+
+    second = _claiming(registry, "MALAVI-SUB-2026-000003", "TUMIG19")
+    entries[second.submission_id] = second
+    transition(second, "approved", "alice", at="2026-08-06T00:00:00+00:00",
+               entries=entries)
+    assert second.state == "approved"
+
+
+def test_the_clash_is_found_on_the_corrected_name(registry):
+    """A submission offered TUMIG19 in place of TUMIG06 clashes on TUMIG19, not TUMIG06."""
+    entries, _first = _approved(registry)             # holds TUMIG19
+    second = _claiming(registry, "MALAVI-SUB-2026-000003", "TUMIG06")
+    second.name_corrections = {"TUMIG06": "TUMIG19"}
+    entries[second.submission_id] = second
+
+    assert ledger.names_held_elsewhere(entries, second) == {
+        "TUMIG19": ["MALAVI-SUB-2026-000002"]}
+    assert ledger.names_held_elsewhere(entries, entries["MALAVI-SUB-2026-000002"]) == {
+        "TUMIG19": ["MALAVI-SUB-2026-000003"]}, "the check is symmetric"
+
+
+def test_a_transition_without_the_ledger_cannot_check_and_does_not_pretend_to(registry):
+    """Callers that move a submission AWAY from holding a name pass nothing; that is
+    allowed. A caller approving should pass ``entries`` -- see the tests above."""
+    entries, _first = _approved(registry)
+    second = _claiming(registry, "MALAVI-SUB-2026-000003", "TUMIG19")
+    transition(second, "approved", "alice", at="2026-08-06T00:00:00+00:00")
+    assert second.state == "approved"
+
+
+# ------------------------------------------- the lead's consultation on a correction
+
+def test_the_leads_consultation_on_a_correction_is_kept(entry, registry, tmp_path):
+    """REGRESSION (A5, 2026-08-14 review): the form required the lead to name who they
+    discussed the approval with, the parser validated it, and the ledger dropped it."""
+    from malavi_curation.ledger import record_correction, approve_correction
+
+    hold(entry, registry, "bob")
+    c = record_correction(entry, "alice@example.edu", "Host is Turdus merula.",
+                          "author", ["the authors"], registry_path=registry)
+    approve_correction(entry, c.id, "lead@example.edu", registry_path=registry,
+                       consulted=["bob", " the authors ", ""], consulted_on="2026-08-05",
+                       note="Bob and the authors agree.", at="2026-08-05T09:00:00+00:00")
+
+    assert c.approval_consulted == ["bob", "the authors"]
+    assert c.approval_consulted_on == "2026-08-05"
+    assert c.approval_note == "Bob and the authors agree."
+    # The proposer's own record -- who confirmed the correction to Alice -- is a different
+    # fact and must not be overwritten by the lead's.
+    assert c.consulted == ["the authors"]
+
+    event = [h for h in entry.history if h["event"] == "correction_approved"][-1]
+    assert event["consulted"] == ["bob", "the authors"]
+    assert event["consulted_on"] == "2026-08-05"
+
+    # And it survives the file, like an override's consultation does.
+    save(tmp_path, {entry.submission_id: entry})
+    reloaded = load(tmp_path)[entry.submission_id]
+    assert reloaded.corrections[0].approval_consulted == ["bob", "the authors"]
+    assert reloaded.corrections[0].approval_note == "Bob and the authors agree."

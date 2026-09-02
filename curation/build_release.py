@@ -132,7 +132,10 @@ def main(argv=None) -> int:
         print(f"error: this release may not be built -- {len(gate.violations)} "
               f"provenance problem(s), {len(refusals)} submission(s) the ledger would "
               f"refuse to record as released:", file=sys.stderr)
-        for line in release_gate.describe(gate, refusals):
+        # entries and the release tag let describe() print the exact --retract command
+        # under a violation that a retraction would clear.
+        for line in release_gate.describe(gate, refusals, entries=entries,
+                                          release=args.release):
             print(line, file=sys.stderr)
         if not args.override_gate:
             print("\nNothing was written. Fix the ledger, or the store's provenance, and "

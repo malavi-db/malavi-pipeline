@@ -581,3 +581,44 @@ def test_retracting_and_ingesting_in_one_run_is_refused(cli, project, capsys):
                      "--submission", SUBMISSION, "--apply"])
     assert code == 1
     assert "Run them separately" in capsys.readouterr().err
+
+
+# ------------------------------------------------ naming a submission by its directory
+
+def test_a_directory_name_names_the_submission_and_the_store_gets_the_id(cli, project):
+    """The convenience the docstring promised and the gate refused.
+
+    A maintainer at the filesystem has the directory name, not the opaque id. It used to
+    reach release_gate.admissibility as typed and be refused as "no such submission"
+    before resolve_directory ever ran. Translated first, it works -- and what lands in
+    _source is the id, never the submitter's directory name.
+    """
+    code = cli.main(["--release", "2026-08-14", "--submission", DIRECTORY, "--apply"])
+    assert code == 0
+    rows = mine(project)
+    assert len(rows) == 1
+    assert all(row["_source"] != DIRECTORY for row in host_records(project)), \
+        "a directory name is a submitter's name and must never be stamped into the store"
+
+
+def test_a_directory_name_works_for_a_retraction_too(cli, project):
+    cli.main(["--release", "2026-08-14", "--apply"])
+    withdraw(project)
+    code = cli.main(["--release", "2026-08-14", "--retract", DIRECTORY, "--apply"])
+    assert code == 0
+    assert mine(project) == []
+
+
+def test_a_name_nothing_was_minted_for_is_refused_rather_than_ingesting_everything(
+        cli, project, capsys):
+    """A typo must not become a full ingest.
+
+    An empty --submission list means "every approved submission", so a name that
+    translates to nothing has to stop the run rather than fall through to that default.
+    """
+    code = cli.main(["--release", "2026-08-14", "--submission",
+                     "20260101T000000_Nobody", "--apply"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "20260101T000000_Nobody" in out and "Nothing to do" in out
+    assert mine(project) == [], "the approved submission was not ingested on the side"

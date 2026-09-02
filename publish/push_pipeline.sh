@@ -160,14 +160,21 @@ log "  ${copied} manifest entries copied"
 # review found them.
 #
 # A WARNING, not an error. Deciding a program should stay private is legitimate; not
-# noticing it is missing is what this catches. Add a `# private: <reason>` comment
-# beside the name in the manifest if the omission is deliberate, and this stays quiet
-# about it only when the name appears there in any form.
+# noticing it is missing is what this catches. If the omission is deliberate, name the
+# program in a comment line in the manifest, with the reason, like so:
+#
+#   # curation/some_program.py   private: <reason>
+#
+# and this stays quiet about it. The whole line must be a comment: a trailing
+# "# private:" after an uncommented path would still copy the file. The check is a
+# fixed-string, whole-word match anywhere in the line (a path is not a regular
+# expression, and the name may sit after a "#"); until 2026-09-02 it was anchored at
+# the start of the line, so the convention documented here never actually matched.
 log ""
 log "-- checking for maintainer programs the manifest does not name --"
 unlisted=0
 while IFS= read -r program; do
-  if ! grep -q "^${program}\b" "${MANIFEST}"; then
+  if ! grep -qwF -- "${program}" "${MANIFEST}"; then
     log "  NOT PUBLISHED: ${program}"
     unlisted=$((unlisted + 1))
   fi

@@ -49,6 +49,15 @@ BUILDERS = ("build_site_feeds.py", "build_name_reservations.py")
 # The narrow publisher. Deliberately NOT push_site.sh -- see rule 1 above.
 PUBLISHER = Path("publish") / "push_feeds.sh"
 
+# The exit code a builder uses to say "the feed IS written, and a person has to act".
+# build_name_reservations.py exits with it when two submissions claim one name: the
+# earliest claim is published, which is the right feed, and the other submitter has to
+# be offered another name, which no program can do. Until 2026-09-02 refresh() read any
+# non-zero exit as a failed rebuild and withheld every feed, queue.json included -- so one
+# stale collision silently froze the public queue. build_site_feeds.py does not use this
+# code today; if it ever does, it has to mean the same thing there.
+NEEDS_A_PERSON = 2
+
 
 def _run(command: List[str], cwd: Path) -> subprocess.CompletedProcess:
     """Run one step, capturing everything. Never raises on a non-zero exit."""
@@ -62,6 +71,10 @@ def refresh(dry_run: bool = False, publish: bool = True,
 
     Returns True if everything it attempted succeeded. Prints a one-line note for each
     step that did not, and never raises: see rule 2 in the module docstring.
+
+    A builder exiting :data:`NEEDS_A_PERSON` has succeeded as far as publishing goes: its
+    feed is written and is published like any other. What it printed is repeated here in
+    full, because it is a message for a curator and this may be the only place it shows.
 
     ``publish=False`` rebuilds the feeds locally and stops, for a caller that wants the
     files current without an outward-facing action.
@@ -81,6 +94,14 @@ def refresh(dry_run: bool = False, publish: bool = True,
             ok = False
             continue
         result = _run([interpreter, str(script)], root)
+        if result.returncode == NEEDS_A_PERSON:
+            # Written, publishable, and somebody has to be told. The builder's stderr is
+            # the message; it is repeated whole rather than summarized to one line.
+            print(f"  NOTE: {builder} wrote its feed but needs a person:")
+            detail = (result.stderr or result.stdout or "").strip().splitlines()
+            for line in detail or [f"exit {result.returncode}, no message"]:
+                print(f"        {line}")
+            continue
         if result.returncode != 0:
             # The generator's own diagnostics are worth more than a summary of them.
             detail = (result.stderr or result.stdout or "").strip().splitlines()

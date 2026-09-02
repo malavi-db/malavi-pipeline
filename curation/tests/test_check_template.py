@@ -164,6 +164,20 @@ class TestFreeNameSuggestions:
         finding = report["issues"][0]
         assert "Suggesting TUMIG20" in finding["message"]
 
+    def test_two_workbooks_in_one_submission_are_not_offered_the_same_number(
+            self, check_template):
+        """REGRESSION: the set of unavailable names was rebuilt per report, so a second
+        workbook proposing the same taken host acronym as the first was offered the very
+        number the first had just been given."""
+        first = _screened(name="TUMIG19")
+        second = _screened(name="TUMIG19")
+        check_template.offer_free_names([first, second], {"TUMIG19"}, {}, [])
+        offered_first = set((first.get("name_suggestions") or {}).values())
+        offered_second = set((second.get("name_suggestions") or {}).values())
+        assert offered_first and offered_second
+        assert not offered_first & offered_second, (
+            f"both workbooks were offered {offered_first & offered_second}")
+
     def test_a_taken_name_whose_sequence_is_the_known_lineage_is_left_alone(
             self, check_template):
         """Renaming it would create a duplicate of something MalAvi already has."""
@@ -173,6 +187,27 @@ class TestFreeNameSuggestions:
                                  "message": "already in MalAvi"})
         check_template.offer_free_names([report], {"TUMIG19"}, {}, [])
         assert not report.get("name_suggestions")
+
+    # An exact match over too few positions is neither a known lineage nor a new one.
+    # Until 2026-09-02 the screen said nothing about it, so a submitter could name it.
+    def test_an_exact_match_over_too_few_positions_blocks_naming(
+            self, check_template, reference, tmp_path, monkeypatch):
+        real_check_sequence = check_template.check_sequence
+
+        def thin_exact_match(sequence, ref, label=None):
+            result = real_check_sequence(sequence, ref, label=label)
+            result.verdict = "exact_match_low_coverage"
+            result.flags.append("exact_match_over_too_few_positions")
+            result.notes.append("Identical to SGS1 over the 20 positions both cover, but "
+                                "that overlap is too short to call it the same lineage.")
+            return result
+
+        monkeypatch.setattr(check_template, "check_sequence", thin_exact_match)
+        report = check_template.screen(_workbook(tmp_path), reference, known_lineages=set())
+        found = [i for i in report["issues"] if i["code"] == "sequence_identity_unresolved"]
+        assert found and found[0]["severity"] == "error"
+        assert "too short" in found[0]["message"]
+        assert "sequence_is_known_lineage" not in _codes(report)
 
     def test_a_malformed_accession_is_reported(self, check_template, reference, tmp_path):
         path = _workbook(tmp_path, new_lineages=[

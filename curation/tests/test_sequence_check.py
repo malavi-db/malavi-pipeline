@@ -9,14 +9,32 @@ from __future__ import annotations
 import pytest
 
 from malavi_curation.sequence_check import (
-    Reference, check_sequence, clean, count_stops, translate, _CODE4,
+    MIN_COMPARABLE_TO_RANK, Reference, check_sequence, clean, count_stops, translate,
+    _CODE4,
 )
 
-# A tiny synthetic reference. Real cytb is not needed to exercise the logic, and
-# a fixed toy alignment keeps these tests fast and independent of any release.
-REF_A = "ATGGCAACAGGTGCTTCATTTGTATTTATTTTAACTTATTTACATATTTTAAGAGGATTAAAT"
-REF_B = "ATGGCAACAGGTGCTTCATTTGTATTTATTTTAACTTATTTACATATTTTAAGAGGATTAAAG"  # 1 bp from A
-REF_C = "ATGCCTACTGGAGCATCTTTCGTGTTCTTGCTGACGTACCTGCACATCCTGCGCGGACTGAAT"  # divergent
+# A synthetic reference. Real cytb is not needed to exercise the logic, and a fixed toy
+# alignment keeps these tests fast and independent of any release.
+#
+# Each sequence is a 63 bp seed tiled out to the real 479 bp barcode window. The width
+# matters: an exact match is only called a known lineage once it covers
+# MIN_COMPARABLE_TO_RANK (300) positions, and a 63 bp reference could never get there,
+# so every "known" test below would have collapsed into the low-coverage outcome.
+# Tiling keeps the seeds' designed relationships (B is one base from A at the very end,
+# C is divergent everywhere) while making the fixture the size of a real barcode.
+WINDOW = 479
+SEED_A = "ATGGCAACAGGTGCTTCATTTGTATTTATTTTAACTTATTTACATATTTTAAGAGGATTAAAT"
+SEED_C = "ATGCCTACTGGAGCATCTTTCGTGTTCTTGCTGACGTACCTGCACATCCTGCGCGGACTGAAT"  # divergent
+
+
+def _tile(seed: str) -> str:
+    """Repeat a seed until it fills the barcode window, then cut to the window."""
+    return (seed * (WINDOW // len(seed) + 1))[:WINDOW]
+
+
+REF_A = _tile(SEED_A)
+REF_B = REF_A[:-1] + ("G" if REF_A[-1] != "G" else "T")  # 1 bp from A, at the last position
+REF_C = _tile(SEED_C)
 
 
 @pytest.fixture
@@ -78,6 +96,39 @@ def test_known_lineage_still_recognised_when_frame_shifted(ref):
 def test_known_lineage_recognised_with_leading_padding(ref):
     res = check_sequence("N" + REF_A[1:], ref, label="padded")
     assert res.verdict == "known_lineage"
+
+
+def test_exact_match_over_too_few_positions_is_not_called_known(ref):
+    """A short overlap with zero mismatches is not an identity.
+
+    Regression guard for a real defect: a partial barcode laid over a thinly covered
+    reference could agree at 20 positions, disagree nowhere, and be reported as
+    "identical over all 20 comparable positions" -- a known lineage, case closed. The
+    exact match must still lead the neighbor list (it is the safety property that a
+    known lineage is never called new), but the verdict has to say plainly that the
+    overlap is too short to call it the same lineage and ask for a longer read.
+    """
+    short = REF_A[:MIN_COMPARABLE_TO_RANK - 100]   # a 200 bp partial barcode
+    res = check_sequence(short, ref, label="partial")
+    assert res.verdict == "exact_match_low_coverage"
+    assert "exact_match_over_too_few_positions" in res.flags
+    assert "exact_match_to_known_lineage" not in res.flags
+    # Still not new, and the identical lineage still heads the list where a curator
+    # can see it.
+    assert res.verdict != "new_candidate"
+    assert res.nearest[0][1] == 0
+    assert res.nearest[0][2] == len(short)
+    # The note has to name the problem and the remedy. Matched loosely: wording is
+    # not the contract, the flag is.
+    joined = " ".join(res.notes).lower()
+    assert "too short" in joined and "longer read" in joined
+
+
+def test_exact_match_at_the_coverage_floor_is_still_known(ref):
+    """Pins the boundary: exactly MIN_COMPARABLE_TO_RANK positions is enough."""
+    res = check_sequence(REF_A[:MIN_COMPARABLE_TO_RANK], ref, label="at_floor")
+    assert res.verdict == "known_lineage"
+    assert res.nearest[0][2] == MIN_COMPARABLE_TO_RANK
 
 
 # --------------------------------------------------------------------------

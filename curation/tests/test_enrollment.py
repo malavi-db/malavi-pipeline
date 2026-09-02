@@ -255,3 +255,99 @@ def test_two_submissions_claiming_one_name_is_reported_once(tmp_path):
 def test_an_unscreened_submission_claims_nothing_yet(tmp_path):
     make_submission(tmp_path, "20260101T000000_Waiting", screen=False)
     assert enrollment.standing_claims(tmp_path) == {}
+
+
+# ------------------------------------------------- what the review ledger has given back
+#
+# The bug these pin (A13 in the 2026-08-14 review): claims were read straight from each
+# directory's screen.json, and a directory outlives every decision about it. A declined
+# submission's names stayed on the public feed and blocked newcomers at the screen until
+# somebody hand-edited submissions.exclude. The rule, decided with Staffan Bensch on
+# 2026-08-20: only a decline (or a withdrawal) returns a name; a dormant submission keeps
+# its claim indefinitely.
+
+def _decide(inbox, directory, state, *, name_state=None,
+            public_id="MALAVI-SUB-2026-000001"):
+    """Mint an id for `directory` and put its review-ledger entry in `state`.
+
+    Sets the fields directly rather than walking the transition table, because the point
+    is the state the ledger records, not the path a curator took to reach it.
+    """
+    from malavi_curation import submission_id
+    ids = submission_id.load_ledger(inbox)
+    ids["ids"][directory] = {"id": public_id, "minted_at": "2026-01-01T00:00:00+00:00"}
+    submission_id._save_ledger(inbox, ids)
+
+    entries = ledger.load(inbox)
+    entry = ledger.ensure_entry(entries, public_id, "A", "2026-01-01T00:00:00+00:00")
+    entry.state = state
+    if name_state is not None:
+        entry.name_state = name_state
+    ledger.save(inbox, entries)
+    return entry
+
+
+def test_a_declined_submission_gives_its_names_back(tmp_path):
+    make_submission(tmp_path, "20260101T000000_First", lineages=("TUMIG31",))
+    _decide(tmp_path, "20260101T000000_First", "declined", name_state="released")
+    assert enrollment.standing_claims(tmp_path) == {}
+
+
+def test_a_withdrawn_submission_gives_its_names_back(tmp_path):
+    make_submission(tmp_path, "20260101T000000_First", lineages=("TUMIG31",))
+    _decide(tmp_path, "20260101T000000_First", "withdrawn", name_state="released")
+    assert enrollment.standing_claims(tmp_path) == {}
+
+
+def test_a_dormant_submission_keeps_its_names(tmp_path):
+    """Its submitter is very often doing the resequencing a curator asked for. Taking
+    the name back at 60 days would hand it to somebody else in the middle of that."""
+    make_submission(tmp_path, "20260101T000000_First", lineages=("TUMIG31",))
+    _decide(tmp_path, "20260101T000000_First", "dormant")
+    assert enrollment.standing_claims(tmp_path) == {"TUMIG31": "20260101T000000_First"}
+
+
+def test_names_an_entry_has_released_are_not_claimed_whatever_its_state(tmp_path):
+    """name_state is the name's own lifecycle; `released` means given back."""
+    make_submission(tmp_path, "20260101T000000_First", lineages=("TUMIG31",))
+    _decide(tmp_path, "20260101T000000_First", "in_review", name_state="released")
+    assert enrollment.standing_claims(tmp_path) == {}
+
+
+def test_a_live_submission_with_a_ledger_entry_still_claims(tmp_path):
+    make_submission(tmp_path, "20260101T000000_First", lineages=("TUMIG31",))
+    _decide(tmp_path, "20260101T000000_First", "in_review")
+    assert enrollment.standing_claims(tmp_path) == {"TUMIG31": "20260101T000000_First"}
+
+
+def test_a_directory_with_no_ledger_entry_keeps_its_claim(tmp_path):
+    """Nothing has been decided about it, so nothing changes for it."""
+    make_submission(tmp_path, "20260101T000000_First", lineages=("TUMIG31",))
+    make_submission(tmp_path, "20260202T000000_Second", lineages=("TUMIG32",))
+    _decide(tmp_path, "20260101T000000_First", "declined", name_state="released")
+    assert enrollment.standing_claims(tmp_path) == {"TUMIG32": "20260202T000000_Second"}
+
+
+def test_a_declined_submission_no_longer_blocks_a_newcomer_at_the_screen(tmp_path):
+    """The failure that mattered: the newcomer was told the name was claimed by a
+    submission that had already been turned down."""
+    make_submission(tmp_path, "20260101T000000_Declined", lineages=("TUMIG31",))
+    make_submission(tmp_path, "20260202T000000_Newcomer", lineages=("TUMIG31",))
+    _decide(tmp_path, "20260101T000000_Declined", "declined", name_state="released")
+    claims = enrollment.standing_claims(tmp_path, exclude=["20260202T000000_Newcomer"])
+    assert claims == {}
+
+
+def test_an_unreadable_ledger_releases_nothing(tmp_path):
+    """The conservative direction: a name is never handed to a second person because
+    the record of the first could not be read."""
+    make_submission(tmp_path, "20260101T000000_First", lineages=("TUMIG31",))
+    _decide(tmp_path, "20260101T000000_First", "declined", name_state="released")
+    ledger.ledger_path(tmp_path).write_text("{not json")
+    assert enrollment.standing_claims(tmp_path) == {"TUMIG31": "20260101T000000_First"}
+    with pytest.raises(ledger.LedgerError):
+        enrollment.submissions_with_returned_names(tmp_path)
+
+
+def test_no_ledger_at_all_means_nothing_was_returned(tmp_path):
+    assert enrollment.submissions_with_returned_names(tmp_path) == set()

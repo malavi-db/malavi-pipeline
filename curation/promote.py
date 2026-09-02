@@ -163,9 +163,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 try:
                     # Same reasoning as the dormant branch: transition() re-checks at the
                     # write, so a fresh objection recorded between the scan and here makes
-                    # this refuse rather than approve over the top of it.
+                    # this refuse rather than approve over the top of it. The ledger is
+                    # passed so the approval is also refused if another submission holds
+                    # one of this one's agreed names (the one-name-one-submission rule).
                     ledger.transition(entry, "approved", actor="promoter", at=moment,
-                                      reason="objection_resolved", config=config)
+                                      reason="objection_resolved", config=config,
+                                      entries=entries)
                 except ledger.LedgerError as exc:
                     print(f"  [refused  ] {proposal.submission_id}  {exc}")
                     continue

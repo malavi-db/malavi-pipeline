@@ -25,9 +25,17 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
-from . import form_metadata, ledger
+from . import form_metadata, ledger, submission_id
+
+# The submission states in which reserved names have been given back. `declined` and
+# `withdrawn` are the only two: a `dormant` submission keeps its claim indefinitely (its
+# submitter is very often doing the resequencing a curator asked for, and taking the name
+# back would hand it to somebody else mid-way -- decided with Staffan Bensch, 2026-08-20;
+# see ledger.transition), and a `released` submission's names are in the release itself,
+# which every reader of these claims already treats as taken.
+NAMES_RETURNED_STATES = ("declined", "withdrawn")
 
 # Screen results are read through the functions below rather than by re-reading a
 # submitter's workbook, so that the names the ledger reserves are exactly the names the
@@ -78,6 +86,46 @@ def name_suggestions(sub_dir: Path) -> Dict[str, str]:
     return suggestions
 
 
+def submissions_with_returned_names(inbox: Path) -> Set[str]:
+    """Directories whose submission has given its reserved names back, per the ledger.
+
+    **Why this exists.** The reservation feed and the screen both read claims straight
+    from each directory's ``screen.json``, and a directory outlives every decision made
+    about it. So a submission a curator declined went on holding its names publicly and
+    went on blocking newcomers at the screen, until somebody hand-edited
+    ``submissions.exclude`` -- and ``close_submission`` had already reported "reserved
+    names released" by then, which was not true anywhere the names were actually read.
+
+    **What counts as returned.** An entry in :data:`NAMES_RETURNED_STATES`, or one whose
+    ``name_state`` is ``released`` however it got there. A dormant entry is deliberately
+    NOT returned; see the note on that constant.
+
+    **How a directory finds its entry.** The review ledger is keyed by the opaque public
+    identifier, and ``submission_ids.json`` is the only map from a directory to one. A
+    directory with no identifier, or with an identifier the review ledger has no entry
+    for, is not in the answer: nothing has been decided about it, so its claims stand
+    exactly as before.
+
+    An absent review ledger means nothing was ever decided and returns the empty set. An
+    unreadable one raises (:class:`ledger.LedgerError` or ``ValueError`` from the id
+    ledger) rather than guessing, so the caller can decide how loudly to say so.
+    """
+    inbox = Path(inbox)
+    if not ledger.ledger_path(inbox).is_file():
+        return set()
+    entries = ledger.load(inbox)
+    minted = submission_id.load_ledger(inbox).get("ids") or {}
+
+    returned: Set[str] = set()
+    for directory, record in minted.items():
+        entry = entries.get(str((record or {}).get("id") or ""))
+        if entry is None:
+            continue
+        if entry.state in NAMES_RETURNED_STATES or entry.name_state == "released":
+            returned.add(str(directory))
+    return returned
+
+
 def standing_claims(inbox: Path, *, exclude: Optional[Iterable[str]] = None,
                     known: Optional[Iterable[str]] = None) -> Dict[str, str]:
     """Every lineage name a *pending* submission has already claimed → whose it is.
@@ -102,15 +150,22 @@ def standing_claims(inbox: Path, *, exclude: Optional[Iterable[str]] = None,
     ``exclude`` is directory names to ignore — pass the submission being screened, or it
     collides with itself, plus anything in ``submissions.exclude`` from the config.
 
-    This does not read the ledger, so a name whose submission was declined stays listed
-    until the directory is excluded. That is the conservative direction (it never hands a
-    name to a second person while the first still believes it is theirs) but it is not
-    free: see the note in ``build_name_reservations.py``.
+    The review ledger is consulted when there is one: a submission that was declined or
+    withdrawn has given its names back and claims nothing here, while a dormant one keeps
+    its claim (see :func:`submissions_with_returned_names` for the rule and its reason).
+    A ledger that cannot be read releases nothing -- the conservative direction, since it
+    never hands a name to a second person while the first may still believe it is theirs
+    -- and ``build_name_reservations.py`` is where that failure is reported out loud.
     """
     inbox = Path(inbox)
     if not inbox.is_dir():
         return {}
     skip = {str(name) for name in (exclude or ())}
+    try:
+        skip |= submissions_with_returned_names(inbox)
+    except (ledger.LedgerError, ValueError):
+        # Unreadable ledger: treat no name as returned. See the docstring.
+        pass
     owned = {str(name).strip().upper() for name in (known or ())}
     claims: Dict[str, str] = {}
     for sub_dir in sorted(p for p in inbox.iterdir() if p.is_dir()):

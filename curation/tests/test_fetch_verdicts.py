@@ -535,3 +535,67 @@ def test_every_column_the_parser_reads_is_in_the_guarded_set():
     declared = {value for name, value in vars(verdicts).items()
                 if name.startswith("COL_") and isinstance(value, str)}
     assert declared == set(verdicts.COLUMNS_READ)
+
+
+# ------------------------------------------------- the lead's consultation is kept
+
+def test_a_lead_approval_keeps_who_was_consulted(fetch, entries, registry):
+    """REGRESSION (A5, 2026-08-14 review): parsed into Action.consulted, then dropped on
+    the way to the ledger. The form promises the lead approves "after discussing with
+    you and potentially the author"; the ledger has to show that they did."""
+    _flag_and_propose(fetch, entries, registry)
+    apply(fetch, entries, registry,
+          **{verdicts.COL_TIMESTAMP: "2026-08-03 09:00:00",
+             verdicts.COL_EMAIL: "lead@example.edu",
+             verdicts.COL_ACTION: verdicts.ACTION_APPROVE_CORRECTION,
+             verdicts.COL_CORRECTION_ID: "C1",
+             verdicts.COL_DISCUSSED_WITH: "Bob; the submitting authors",
+             verdicts.COL_CONCLUDED: "Bob agrees the host was a synonym."})
+
+    correction = entries[SUBMISSION].corrections[0]
+    assert correction.approved_by == "lead"
+    assert correction.approval_consulted == ["Bob", "the submitting authors"]
+    assert correction.approval_note == "Bob agrees the host was a synonym."
+    event = [h for h in entries[SUBMISSION].history
+             if h["event"] == "correction_approved"][-1]
+    assert event["consulted"] == ["Bob", "the submitting authors"]
+
+
+# --------------------------------------------- an accept over a name somebody else holds
+
+def test_an_accept_is_refused_when_another_submission_holds_the_name(fetch, entries,
+                                                                    registry):
+    """The verdict is recorded -- the curator did say Accept -- but the state does not
+    move, and the outcome says why, naming the other submission."""
+    entry = entries[SUBMISSION]
+    entry.reserved_names = ["TUMIG19"]
+    other = ledger.ensure_entry(entries, "MALAVI-SUB-2026-000002", "A",
+                                "2026-07-01T00:00:00+00:00")
+    other.reserved_names = ["TUMIG19"]
+    ledger.transition(other, "ready_for_review", "intake", at="2026-07-01T12:00:00+00:00")
+
+    outcome = apply(fetch, entries, registry)
+
+    assert [v.verdict for v in entry.verdicts] == ["approve"]
+    assert entry.state == "in_review", "picked up, but not approved"
+    assert entry.approved_at is None
+    assert "MALAVI-SUB-2026-000002" in str(outcome), outcome
+
+
+# --------------------------------------------------- --from-csv goes through read_rows
+
+def test_from_csv_refuses_a_repeated_header_too(fetch, tmp_path, monkeypatch):
+    """REGRESSION (2026-09-02 review, finding 6): the local-CSV path used csv.DictReader
+    directly, so the guard that protects the live sheet did not protect a saved export."""
+    responses = tmp_path / "responses.csv"
+    responses.write_text(
+        "Timestamp,Submission id,Why is it being closed?,Why is it being closed?\n"
+        "2026-08-14 10:00:00,MALAVI-SUB-2026-000001,It is already in MalAvi,\n",
+        encoding="utf-8")
+    monkeypatch.setattr(fetch, "load_config",
+                        lambda: {**CONFIG, "submissions": {"inbox_dir": "inbox"}})
+    monkeypatch.setattr(fetch, "repo_root", lambda: tmp_path)
+
+    assert fetch.main(["--from-csv", str(responses), "--no-publish"]) == 1
+    assert not (tmp_path / "inbox" / fetch.APPLIED_LEDGER_NAME).exists(), \
+        "refused before anything was applied"

@@ -314,3 +314,105 @@ def test_the_failed_one_is_retried_and_the_sent_one_is_not(cn, tmp_path, monkeyp
     assert cn.main([]) == 0, "the retry should succeed and report success"
     assert attempted == ["20260101T000000_B"], (
         "only the one that failed should be attempted again")
+
+
+# --------------------------------------------------------------------------------------
+# One name, one submitter
+#
+# The email tells its reader to put the name in GenBank. Two people told that about one
+# name is the failure the reservation system exists to prevent, and until 2026-09-02 the
+# only collision check ran at ingest -- after both emails had gone.
+# --------------------------------------------------------------------------------------
+
+def test_a_name_another_submission_holds_is_not_confirmed(cn):
+    mine = make_entry(names=("TUMIG19",))
+    mine.submission_id = "20260101T000000_A"
+    theirs = make_entry(names=("TUMIG19",))
+    theirs.submission_id = "20260101T000000_B"
+    entries = {mine.submission_id: mine, theirs.submission_id: theirs}
+
+    ready, why = cn.settled(mine, CONFIG, entries=entries)
+    assert not ready
+    assert "20260101T000000_B" in why and "TUMIG19" in why, "name the other submission"
+
+
+def test_a_declined_holder_no_longer_blocks_the_confirmation(cn):
+    mine = make_entry(names=("TUMIG19",))
+    mine.submission_id = "20260101T000000_A"
+    theirs = make_entry(state="declined", names=("TUMIG19",))
+    theirs.submission_id = "20260101T000000_B"
+    entries = {mine.submission_id: mine, theirs.submission_id: theirs}
+
+    ready, why = cn.settled(mine, CONFIG, entries=entries)
+    assert ready, why
+
+
+def test_a_clashing_name_is_refused_loudly_and_nothing_is_sent(cn, tmp_path, monkeypatch,
+                                                              capsys):
+    """Both settled, both claiming TUMIG18: neither is emailed, the run fails, and the
+    refusal names the other submission on stderr rather than being a quiet skip."""
+    inbox = _two_approved_submissions(tmp_path)
+    entries = ledger.load(inbox)
+    entries["20260101T000000_B"].reserved_names = ["TUMIG18"]      # same as A's
+    ledger.save(inbox, entries)
+    monkeypatch.setattr(cn, "submissions_inbox", lambda: inbox)
+    monkeypatch.setattr(cn, "load_config", lambda: CONFIG)
+
+    delivered = []
+    monkeypatch.setattr(cn, "deliver_name_confirmation",
+                        lambda submission_id, **_: delivered.append(submission_id)
+                        or _Delivered())
+
+    assert cn.main(["--no-publish"]) == 1
+    assert delivered == [], "a name two submissions claim must reach nobody"
+    err = capsys.readouterr().err
+    assert "REFUSED" in err and "TUMIG18" in err
+    assert "20260101T000000_A" in err and "20260101T000000_B" in err
+
+    written = ledger.load(inbox)
+    for entry in written.values():
+        assert not any(h.get("event") == cn.CONFIRMATION_EVENT for h in entry.history), \
+            "nothing was sent, so nothing may claim it was"
+
+
+# --------------------------------------------------------------------------------------
+# Sent once, the endpoint's half
+#
+# The history record is written only after the endpoint replies. A request that timed out
+# here after the mail had gone is therefore retried next run, and the endpoint has to be
+# the one that remembers. It answers `already_sent`; this side records it and moves on.
+# --------------------------------------------------------------------------------------
+
+def test_an_endpoint_that_already_sent_it_is_recorded_not_retried(cn, tmp_path,
+                                                                 monkeypatch):
+    class _AlreadySent:
+        notified = 0
+        action = "already_sent"
+
+    inbox = _two_approved_submissions(tmp_path)
+    monkeypatch.setattr(cn, "submissions_inbox", lambda: inbox)
+    monkeypatch.setattr(cn, "load_config", lambda: CONFIG)
+    monkeypatch.setattr(cn, "deliver_name_confirmation", lambda *_a, **_k: _AlreadySent())
+
+    assert cn.main(["--no-publish"]) == 0
+    written = ledger.load(inbox)
+    for entry in written.values():
+        assert any(h.get("event") == cn.CONFIRMATION_EVENT for h in entry.history), \
+            "the endpoint's earlier send is the send; record it so it is not tried again"
+
+
+def test_the_endpoint_checks_for_a_previous_send_before_mailing():
+    """The Apps Script half, checked at the level this repository can: the confirmation
+    handler must consult its memory BEFORE composing the mail and write to it only AFTER
+    the mail has gone. A key recorded before the send would suppress the retry that is
+    supposed to fix a failed one. (The live deployment has to be updated by hand for any
+    of this to apply -- see the RE-DEPLOYING note at the top of the script.)"""
+    source = (repo_root() / "curation" / "apps_script" / "publish_report.gs").read_text(
+        encoding="utf-8")
+    body = source[source.index("function confirmNames_("):]
+    body = body[:body.index("\n}\n")]
+    assert (body.index("alreadyConfirmed_(") < body.index("GmailApp.sendEmail(")
+            < body.index("rememberConfirmation_(")), body
+    assert "function alreadyConfirmed_(" in source
+    assert "function rememberConfirmation_(" in source
+    assert "PropertiesService" in source

@@ -429,6 +429,19 @@ class TestPaperOnly:
         from malavi_curation.report_html import render_paper_only_report
         html = render_paper_only_report(self._metadata())
         assert "1EXAMPLEfileid0000000" in html
+        assert "a paper without a filled-in data template" in html
+
+    def test_a_response_with_no_files_is_not_called_a_paper(self):
+        """A response with nothing attached used to get the paper-only wording, which told
+        a curator to read a paper that did not exist."""
+        from malavi_curation.report_html import render_paper_only_report
+        metadata = {k: v for k, v in self._metadata().items() if "drive.google" not in v}
+        html = render_paper_only_report(metadata)
+        assert "Nothing here has been checked" in html
+        assert "no files attached" in html
+        assert "Ask the submitter" in html
+        assert "a paper without a filled-in data template" not in html
+        assert "There is nothing to approve or reject here" in html
 
     def test_it_names_the_action_that_moves_it_forward(self):
         from malavi_curation.report_html import render_paper_only_report
