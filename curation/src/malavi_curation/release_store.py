@@ -31,7 +31,9 @@ change.
 from __future__ import annotations
 
 import csv
+import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -163,15 +165,33 @@ def record_id(row: Dict[str, Any]) -> str:
     return (row.get("RECORD_ID") or "").strip()
 
 
+def id_number(spec: TableSpec, value: str) -> int:
+    """The numeric part of one of this table's ids, or 0 when it is not one."""
+    match = re.fullmatch(rf"{re.escape(spec.prefix)}-(\d+)", (value or "").strip())
+    return int(match.group(1)) if match else 0
+
+
+def highest_id(spec: TableSpec, rows: Iterable[Dict[str, Any]]) -> int:
+    """The highest id number among these rows, 0 when none carries one."""
+    return max((id_number(spec, record_id(row)) for row in rows), default=0)
+
+
 def assign_ids(spec: TableSpec, rows: Sequence[Dict[str, Any]],
-               start: int = 1) -> List[Dict[str, Any]]:
+               start: Optional[int] = None, floor: int = 0) -> List[Dict[str, Any]]:
     """Give every row without a RECORD_ID a new one, leaving existing ids untouched.
 
     Existing ids are never reissued: a curator decision, a correction and a published
     record may all point at one, and renumbering would detach every reference at once.
+
+    **Nor are retired ids.** New ids start above the highest id in ``rows`` and above
+    ``floor`` -- the store's recorded high-water mark, see :func:`read_high_water`. An
+    earlier version started at 1 and took the first gap, so the next lineage ingested
+    after STRALU01 was retired would have become LIN-004388, STRALU01's own id, and every
+    ``--retract`` handed its ids to the next submission (review of 2026-09-15, 1.2/3.3).
+    ``start`` overrides both when a caller has measured the mark itself.
     """
     used = {record_id(row) for row in rows if record_id(row)}
-    number = start
+    number = start if start is not None else max(highest_id(spec, rows), floor) + 1
     out: List[Dict[str, Any]] = []
     for row in rows:
         row = dict(row)
@@ -257,6 +277,42 @@ def write_table(directory: Path, spec: TableSpec, rows: Iterable[Dict[str, Any]]
     return path
 
 
+# The store's record of the highest id ever issued per table, kept beside the tables.
+# A row that is removed takes its id out of the CSV, and nothing else would remember
+# that the number was ever used.
+HIGH_WATER_FILE = "id_high_water.json"
+
+
+def read_high_water(directory: Path) -> Dict[str, int]:
+    """``{table name: highest id number ever written}``; empty when never recorded."""
+    path = Path(directory) / HIGH_WATER_FILE
+    if not path.is_file():
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    return {name: int(value) for name, value in data.get("highest", {}).items()}
+
+
+def write_high_water(directory: Path, marks: Dict[str, int]) -> Path:
+    """Record the marks, never lowering one that is already recorded."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    current = read_high_water(directory)
+    for name, value in marks.items():
+        current[name] = max(current.get(name, 0), int(value))
+    path = directory / HIGH_WATER_FILE
+    payload = {
+        "_note": "Highest RECORD_ID number ever issued per table. A removed row's id "
+                 "must never be reissued; this is how the store remembers it was used. "
+                 "Maintained by release_store.write_store; never lowered.",
+        "highest": {name: current[name] for name in sorted(current)},
+    }
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=1)
+        handle.write("\n")
+    return path
+
+
 def read_store(directory: Path) -> Dict[str, List[Dict[str, str]]]:
     """The whole store, table name -> rows."""
     return {name: read_table(directory, spec) for name, spec in TABLES.items()}
@@ -286,8 +342,16 @@ def write_store(directory: Path, store: Dict[str, Iterable[Dict[str, Any]]],
             f"{directory} already holds records. Seeding again would reassign every "
             f"record id from 1 and overwrite the provenance of anything added since. "
             f"If that is genuinely intended, move the existing store aside first.")
-    return [write_table(directory, TABLES[name], rows)
-            for name, rows in store.items() if name in TABLES]
+    written = []
+    marks: Dict[str, int] = {}
+    for name, rows in store.items():
+        if name not in TABLES:
+            continue
+        rows = list(rows)
+        written.append(write_table(directory, TABLES[name], rows))
+        marks[name] = highest_id(TABLES[name], rows)
+    write_high_water(directory, marks)
+    return written
 
 
 def stamp(rows: Iterable[Dict[str, Any]], source: str, release: str

@@ -51,16 +51,17 @@ release was documented nowhere and four of its steps appeared in no section at a
 
 | # | Do this | § |
 |---|---|---|
+| 12c | **only when Lund sends a database**: `import_master_db.py --db MALAVI.sqlite --release <date>` dry-run, read it, then `--apply`; then `lund_changes_report.py` and send Staffan the PDF | §3bb |
 | 13 | `ingest_submissions.py --release <date> --apply` | §3e |
 | 14 | fill the blank order/family/continent/`SEQ_LENGTH` columns in `data/records/`, and commit | §3e |
 | 15 | `build_release.py --dry-run --diff-against …`, **read the diff**, then build for real | §8 |
 | 16 | read the edition report; copy the *public* one into `docs/` by hand | §8b |
 | 17 | archive the ZIP into `malaviR/data-raw/` | §8 |
-| 18 | in malaviR: `Rscript data-raw/process_release.R`, then rebuild and reinstall the package | *no section — see the header of that script* |
+| 18 | in malaviR: `Rscript data-raw/process_release.R` **under the R 4.5 conda environment** (`source /opt/miniforge3/etc/profile.d/conda.sh && conda run -p ~/conda_envs/malaviR Rscript data-raw/process_release.R`; system R 4.3 has DECIPHER 2.30 and the BLAST index step fails with `IndexSeqs is not an exported object`), then `Rscript data-raw/build_taxonomy.R`, bump `DESCRIPTION` + `NEWS.md`, `R CMD INSTALL --no-multiarch .`, run the tests | *no section — see the header of that script* |
 | 19 | bump `malaviR.release` in `config/project.yml` to the new date | *no section* |
 | 20 | `Rscript curation/r/gate_reference.R > curation/src/malavi_curation/data/db_snapshot.json` | §2 |
 | 21 | `Rscript curation/r/gazetteer.R > curation/src/malavi_curation/data/gazetteer.json` | *only in `curation/README.md`* |
-| 22 | **all six** export scripts | §6 |
+| 22 | **all seven** export scripts | §6 |
 | 23 | all three test suites | §5 |
 | 24 | `push_site.sh --dry-run`, then for real | §7 |
 | 25 | `bash backup/lifeboat.sh` | §9b |
@@ -374,6 +375,49 @@ print('seeded', {k: len(v) for k,v in store.items()})"
 
 The check compares every stored table back against the release CSV it came from; a difference means the import lost
 something, and the store is about to become the authority.
+
+---
+
+## 3bb. Import an updated master database from Lund ✅ (built and run 2026-09-15)
+
+Runs when Staffan sends `MALAVI.sqlite`, the relational database the flat releases used
+to be exported from. Done once on 2026-09-15 with every dataset from his waiting list;
+from that import on the store is where MalAvi is curated, so this should not be a routine
+step. It is written to be repeatable in case it has to be.
+
+The database is **private and never published**: `*.sqlite` is gitignored, it is not in
+`publish/public_manifest.txt`, and the export written from it goes to the gitignored
+`data/master_exports/<release>/`. Only the committed report
+`data/master_imports/import_<release>.json` (hash, counts, findings, merge, corrections
+replayed) and the store itself are tracked.
+
+```bash
+# what the import would do, writing nothing -- read the reproduction check first
+.venv/bin/python curation/import_master_db.py --db MALAVI.sqlite --release 2026-09-15
+
+# do it
+.venv/bin/python curation/import_master_db.py --db MALAVI.sqlite --release 2026-09-15 --apply
+
+# the document for Staffan: everything that differs between the last release he
+# produced and the database as we read it, plus the corrections applied on top
+.venv/bin/python curation/lund_changes_report.py --release 2026-09-15 --previous 2026-03-23
+```
+
+**Read the reproduction check before `--apply`.** The export rules were measured against
+the 2026-03-23 release (the docstring of `master_db.py` lists the ones that are not
+obvious from the schema). Against that release the check should show vector data
+identical and the other tables gaining rows and losing almost none; hundreds of rows
+differing on one derived column means a rule is wrong, not that Staffan edited hundreds
+of rows. Then read the merge: identities are kept for identical rows and for edited rows
+paired by natural key; new rows are `_source=seed`, `_added=<release>`; removed rows are
+named. Then the corrections replay: every decision in `data/corrections.csv` is planned
+again and re-applied where the database still carries the fault, so the import cannot
+quietly undo a correction. A row **deleted** here by hand (the duplicated Pramual
+reference) is not a logged correction and does come back; `ops/DATA_ISSUES.md` says so.
+
+After the import the release steps run as usual from step 15. The Staffan document lands
+in `data/releases/lund_changes_<release>.{html,pdf,json}` (gitignored: it names
+unpublished studies). Send him the PDF; the merge report is ours, that document is his.
 
 ---
 
@@ -743,6 +787,12 @@ leaves the rest alone. To re-ingest after a correction, name it:
     --submission MALAVI-SUB-2026-000123
 ```
 
+**A record id is never reissued.** New rows get ids above the highest ever issued, which
+`data/records/id_high_water.json` remembers even after a row is retracted or retired
+(`write_store` keeps it current; commit it with the store). Until 2026-09-15 the first
+gap was reused, so the lineage ingested after STRALU01's retirement would have taken
+STRALU01's id.
+
 **The name a submission was approved under is the name that gets written.** A proposed
 lineage name MalAvi already owns is a warning at screen time, not a block: the report
 offers a free alternative and approving the submission adopts it, which the ledger records
@@ -1028,12 +1078,13 @@ rather than assuming the suite covered it.
 
 ## 6. Rebuild the site's data files ✅ (verified 2026-08-08)
 
-Run after the pinned release changes. **All six**, and `build_downloads.R` is not optional:
+Run after the pinned release changes. **All seven**, and `build_downloads.R` is not optional:
 
 ```bash
 Rscript export/build_bird_names.R      # ✅ the eBird/Clements checklist the name checker uses
 Rscript export/build_site_stats.R      # ✅ every figure on the site
 Rscript export/build_sequence_index.R  # ✅ the sequence checker's index
+Rscript export/build_site_points.R     # ✅ the map page's sampling sites (added 2026-09-15)
 Rscript export/build_tables_json.R     # ✅ the browsable tables
 Rscript export/build_reports.R         # ✅ the QC report CSVs
 Rscript export/build_downloads.R       # the per-table CSV/XLSX, the FASTA alignment, the ZIP
@@ -1051,7 +1102,7 @@ Rscript export/build_downloads.R       # the per-table CSV/XLSX, the FASTA align
 > After running it, confirm the files exist for the release you just built:
 > `ls docs/assets/downloads/tables/ | tail`.
 
-Two other lists of this same step exist and disagreed with each other until 2026-08-14:
+Two other lists of this same step exist and disagreed with each other until 2026-08-14 (all three gained `build_site_points.R` on 2026-09-15):
 `export/README.md` (which had `build_downloads.R` but not `build_bird_names.R`) and
 `publish/README.md` (a deliberately shorter one, for republishing without a new release).
 If you change the set, change all three.

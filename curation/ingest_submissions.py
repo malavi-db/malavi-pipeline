@@ -59,7 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from malavi_curation import ledger, release_gate, store_ingest      # noqa: E402
 from malavi_curation.config import repo_root                        # noqa: E402
 from malavi_curation.release_store import (                         # noqa: E402
-    SEED, TABLES, assign_ids, read_store, store_dir, write_store,
+    SEED, TABLES, assign_ids, read_high_water, read_store, store_dir, write_store,
 )
 from malavi_curation.submission_id import (                          # noqa: E402
     directory_for, is_opaque, submission_id_for,
@@ -250,12 +250,15 @@ def ingest_one(store: Dict[str, List[Dict[str, Any]]],
 
     counts: Dict[str, Dict[str, int]] = {}
     blanked: List[Dict[str, str]] = []
+    high_water = read_high_water(store_dir(repo_root()))
     for name, rows in incoming.items():
         spec = TABLES[name]
         before = store[name]
         merged, table_counts = store_ingest.replace_submission_rows(
             spec, before, rows, submission_id)
-        merged = assign_ids(spec, merged)
+        # Above the store's high-water mark as well as above every id present, so a
+        # retired row's id is never handed to a new record.
+        merged = assign_ids(spec, merged, floor=high_water.get(name, 0))
         blanked.extend(store_ingest.blanked_values(spec, before, merged, submission_id))
         store[name] = merged
         counts[name] = table_counts

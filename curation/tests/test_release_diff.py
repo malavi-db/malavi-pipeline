@@ -370,3 +370,18 @@ class TestCurrentEdition:
         edition = current_edition(_store(lineages=[_lineage("TURDUS01")]),
                                   "2026-08-14", summary=summary)
         assert edition.summary == summary
+
+
+def test_host_identity_is_the_species_column_not_the_genus_cell():
+    """REGRESSION (review 2026-09-15, 2.1): correcting a wrong GENUS_NAME beside a correct
+    binomial must not read as a host species retired and another gained."""
+    from malavi_curation.release_diff import _host_binomial
+    before = {"GENUS_NAME": "DUMMY_GENUS_2", "SPECIES_NAME": "Humblotia flavirostris"}
+    after = {"GENUS_NAME": "Humblotia", "SPECIES_NAME": "Humblotia flavirostris"}
+    assert _host_binomial(before) == _host_binomial(after) == "Humblotia flavirostris"
+    assert _host_binomial({"GENUS_NAME": "Creadion",
+                           "SPECIES_NAME": "Philesturnus carunculatus"}) == \
+        "Philesturnus carunculatus"
+    # a bare, genus-level species cell still gets its genus
+    assert _host_binomial({"GENUS_NAME": "Turdus", "SPECIES_NAME": "spp"}) == "Turdus spp"
+    assert _host_binomial({"GENUS_NAME": "Turdus", "SPECIES_NAME": ""}) == "Turdus"

@@ -94,7 +94,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from malavi_curation import embargo, ledger, reference_names       # noqa: E402
 from malavi_curation.config import repo_root                       # noqa: E402
 from malavi_curation.release_store import (                        # noqa: E402
-    SEED, TABLES, assign_ids, read_table, row_key, store_dir, write_table,
+    SEED, TABLES, assign_ids, read_high_water, read_table, row_key, store_dir, write_table,
 )
 
 
@@ -499,7 +499,8 @@ def main(argv=None) -> int:
         "_source": source_for_reference(tables, old, from_store),
         "_added": args.release,
     })
-    write_table(directory, spec, assign_ids(spec, references))
+    write_table(directory, spec, assign_ids(
+        spec, references, floor=read_high_water(directory).get("references", 0)))
     print(f"  wrote {spec.filename}")
 
     # Only now, with the rename on disk. See the note where `behind` is computed.

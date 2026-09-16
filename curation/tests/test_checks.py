@@ -281,9 +281,37 @@ class TestRChecks:
         assert "SAMPLING" in CHECKS["lineage_previously_recorded"].asserts
 
     def test_a_clean_sequence_is_not_a_finding(self, monkeypatch):
+        # malaviR 1.2.0 removed the plausibility score, so an ordinary new lineage comes
+        # back "no_exact_match" rather than "plausible_new_lineage". It carries the flags
+        # that say how far it sits from its neighbours, and distance alone is not a
+        # finding: it is what a new lineage is.
         by_id = self._with_r_result(monkeypatch, {
-            "sequence_qc": [{"lineage_name": "TUMIG19", "call": "plausible_new_lineage",
-                             "score": 0.98}],
+            "sequence_qc": [{"lineage_name": "TUMIG19", "call": "no_exact_match",
+                             "flags": "moderately_divergent_from_known_lineages; "
+                                      "4_nonsynonymous_changes_vs_nearest_lineage; "
+                                      "2_transversions_vs_nearest_lineage"}],
+        })
+        assert by_id["sequence_qc"].outcome is Outcome.PASS
+
+    def test_a_new_lineage_with_a_concrete_problem_is_a_finding(self, monkeypatch):
+        # The other side of the rule above. "Never observed at that site" names something
+        # a curator can check; being distant does not.
+        by_id = self._with_r_result(monkeypatch, {
+            "sequence_qc": [{"lineage_name": "TUMIG19", "call": "no_exact_match",
+                             "flags": "highly_divergent_from_known_lineages; "
+                                      "3_bases_never_observed_at_their_sites"}],
+        })
+        assert by_id["sequence_qc"].outcome is not Outcome.PASS
+
+    def test_a_partial_barcode_is_not_a_finding_for_being_partial(self, monkeypatch):
+        # placed_in_malavi_frame records what the screen did, and the unknown-amino-acid
+        # flag is the arithmetic consequence of that padding. Most MalAvi lineages cover
+        # only part of the window, so flagging this would flag most submissions.
+        by_id = self._with_r_result(monkeypatch, {
+            "sequence_qc": [{"lineage_name": "TUMIG19", "call": "no_exact_match",
+                             "flags": "placed_in_malavi_frame; "
+                                      "contains_unknown_amino_acid_after_translation; "
+                                      "near_known_lineage"}],
         })
         assert by_id["sequence_qc"].outcome is Outcome.PASS
 
@@ -305,7 +333,7 @@ class TestRChecks:
                        "stop-free in frame 2.")
         by_id = self._with_r_result(monkeypatch, {
             "sequence_qc": [{"lineage_name": "NECMON01",
-                             "call": "invalid_or_strong_warning",
+                             "call": "contains_stop_codon",
                              "flags": "contains_stop_codon; possible_chimera",
                              "message": explanation}],
         })

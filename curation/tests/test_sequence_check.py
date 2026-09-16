@@ -252,3 +252,62 @@ def test_determinism(ref):
     a = check_sequence(REF_B, ref, label="x").as_dict()
     b = check_sequence(REF_B, ref, label="x").as_dict()
     assert a == b
+
+
+# ---------------------------------------------------------------------------
+# Long sequences and the other strand (review 2026-09-15, finding 3.1)
+# ---------------------------------------------------------------------------
+
+def _known(ref, index=0):
+    """One reference sequence, ungapped, as a submitter would send it."""
+    return ref.seqs[index].replace("-", "")
+
+
+def test_a_mitogenome_sized_query_is_checked_on_its_window(ref):
+    """The window found thousands of bases in; verdict from the window; the note says
+    where it was."""
+    import random
+    from malavi_curation.sequence_check import reverse_complement
+    rng = random.Random(7)
+    flank = lambda n: "".join(rng.choice("ACGT") for _ in range(n))
+    barcode = _known(ref)
+    query = flank(2500) + barcode + flank(2700)
+    res = check_sequence(query, ref)
+    assert res.verdict == "known_lineage", (res.verdict, res.flags, res.notes)
+    assert "longer_than_window" in res.flags
+    assert res.window == (2501, 2500 + len(barcode))
+    assert any("positions 2501-" in n for n in res.notes)
+    assert res.raw_length == len(query)
+
+    # the same on the other strand
+    res_rc = check_sequence(reverse_complement(query), ref)
+    assert res_rc.verdict == "known_lineage"
+    assert "reverse_complemented" in res_rc.flags and "longer_than_window" in res_rc.flags
+
+
+def test_a_reverse_complemented_barcode_is_recognized(ref):
+    from malavi_curation.sequence_check import reverse_complement
+    res = check_sequence(reverse_complement(_known(ref)), ref)
+    assert res.verdict == "known_lineage"
+    assert "reverse_complemented" in res.flags
+    assert res.window == (1, len(_known(ref)))
+
+
+def test_a_long_unrelated_sequence_is_still_unplaceable(ref):
+    import random
+    rng = random.Random(3)
+    junk = "".join(rng.choice("ACGT") for _ in range(3000))
+    res = check_sequence(junk, ref)
+    assert res.verdict == "unplaceable"
+    assert "3000 bp" in res.notes[-1]
+
+
+def test_ingest_placement_reports_the_window_of_a_long_sequence(ref):
+    import random
+    from malavi_curation import store_ingest
+    rng = random.Random(11)
+    barcode = _known(ref)
+    query = "".join(rng.choice("ACGT") for _ in range(600)) + barcode + "GATTACA"
+    offset, lost_start, lost_end = store_ingest._placement(query, ref)
+    assert offset == -600
+    assert lost_start == 600 and lost_end == 7

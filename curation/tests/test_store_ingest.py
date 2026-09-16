@@ -859,3 +859,26 @@ def test_a_reingest_does_not_register_against_its_own_previous_rows():
     store = {"lineages": [{"LINEAGE_NAME": "NEWLIN01", "SEQUENCE": _WINDOW,
                            "_source": "SUB"}]}
     assert store_ingest.misframed_sequences(store, _incoming(_WINDOW), "SUB") == []
+
+
+def test_a_citation_key_is_stored_in_malavi_form_on_every_row(tmp_path):
+    """Review 2026-09-15, 3.2: 'Vieira et al., 2023' on the Hosts sheet must reach the
+    store as 'Vieira et al 2023', the spelling every other row of that study uses."""
+    from malavi_curation import store_ingest
+    path = workbook(tmp_path, [
+        ["TUMIG19", "Turdus migratorius", None, None, None, None, None, "Sweden", None,
+         "Lund", 3, 25, "Vieira et al., 2023", None]])
+    rows, _notes = store_ingest.host_rows_from_workbook(
+        path, "MALAVI-SUB-2026-000099", "2026-10-01", EXISTING)
+    assert rows[0]["REFERENCE_NAME"] == "Vieira et al 2023"
+
+
+def test_hemisphere_letters_become_the_release_form():
+    """The release writes south and west as a leading minus, never as a letter."""
+    from malavi_curation.store_ingest import signed_coordinate
+    assert signed_coordinate("46°14.99167'N") == "46°14.99167'"
+    assert signed_coordinate("122°57.30833'E") == "122°57.30833'"
+    assert signed_coordinate("12°30.00000'S") == "-12°30.00000'"
+    assert signed_coordinate("045°00.00000' W") == "-045°00.00000'"
+    assert signed_coordinate("-021°46.98000'") == "-021°46.98000'"
+    assert signed_coordinate("") == ""

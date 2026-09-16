@@ -461,3 +461,43 @@ def test_two_taken_names_do_not_receive_the_same_suggestion():
 
     assert first.proposal != second.proposal
     assert (first.proposal, second.proposal) == ("TUMIG03", "TUMIG04")
+
+
+class TestCitationKeyForm:
+    """Review 2026-09-15, 3.2: a published citation key typed 'Vieira et al., 2023' is
+    a second study to every table that joins on the name."""
+
+    def test_a_key_spelled_with_punctuation_is_warned_with_the_canonical_form(
+            self, check_template, reference, tmp_path):
+        report = check_template.screen(_workbook(
+            tmp_path,
+            reference=[["Vieira et al., 2023", 2023, "A title", "A journal", None, None,
+                        None, None]],
+            hosts=[["TUMIG19", "Turdus migratorius", None, None, None, None, None,
+                    "Sweden", None, "Lund", 3, 25, "Vieira et al., 2023", None]]),
+            reference, known_lineages={"SGS1"})
+        assert "reference_name_form" in _codes(report)
+        message = next(i["message"] for i in report["issues"]
+                       if i["code"] == "reference_name_form")
+        assert "'Vieira et al 2023'" in message
+
+    def test_a_key_in_malavi_form_raises_nothing(self, check_template, reference,
+                                                 tmp_path):
+        report = check_template.screen(_workbook(tmp_path), reference,
+                                       known_lineages={"SGS1"})
+        assert "reference_name_form" not in _codes(report)
+
+
+def test_use_windows_hands_the_located_window_to_the_r_checks(check_template):
+    submission = {"sequences": [
+        {"lineage_name": "CARCRI03", "sequence": "x" * 5756, "sequence_clean": "A" * 5756},
+        {"lineage_name": "PENOBS02", "sequence": "y", "sequence_clean": "C" * 479}]}
+    reports = [{"sequences": [
+        {"label": "CARCRI03", "flags": ["longer_than_window"], "registered": "G" * 479,
+         "window": [3754, 4232]},
+        {"label": "PENOBS02", "flags": [], "registered": "C" * 479, "window": [1, 479]}]}]
+    check_template.use_windows(submission, reports)
+    assert submission["sequences"][0]["sequence_clean"] == "G" * 479
+    assert submission["sequences"][0]["sequence_window"] == [3754, 4232]
+    assert submission["sequences"][0]["sequence"] == "x" * 5756
+    assert submission["sequences"][1]["sequence_clean"] == "C" * 479

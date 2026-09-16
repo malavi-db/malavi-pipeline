@@ -119,3 +119,51 @@ def canonical(name: str) -> str:
     disambiguator = match.group("disambiguator")
     rebuilt = f"{match.group('authors').strip()} {MARKER}"
     return f"{rebuilt} {disambiguator}" if disambiguator else rebuilt
+
+
+# ---------------------------------------------------------------------------
+# Published citation keys
+# ---------------------------------------------------------------------------
+
+# "<Authors> <year>[letter]" -- the shape of every published reference name MalAvi holds:
+# "Hellgren 2005", "Baillie & Brunton 2011", "Beadell et al 2009", "Loiseau et al 2012b".
+# No comma before the year, no period after "al". The authors part is left free for the
+# same reason as above.
+_PUBLISHED_KEY = re.compile(r"^(?P<authors>.+?)\s+(?P<year>(?:19|20)\d\d)(?P<letter>[a-z])?$")
+
+
+def published_form(name: str) -> str:
+    """The spelling MalAvi uses for a published citation key, from whatever was typed.
+
+    ``Vieira et al., 2023`` becomes ``Vieira et al 2023``; ``Smith, 2023`` becomes
+    ``Smith 2023``; a name that does not end in a year, or is an unpublished name, is
+    returned with only its whitespace tidied. Only punctuation around "et al" and before
+    the year is touched. Author spellings are the submitter's and are never rewritten.
+
+    Every table joins on this string, and the site and malaviR read it as an identity, so
+    a second spelling of one study is a second study to every consumer (review of
+    2026-09-15, 3.2).
+    """
+    text = re.sub(r"\s+", " ", (name or "").strip())
+    if not text or is_unpublished(text):
+        return text
+    if not _PUBLISHED_KEY.match(text.rstrip(".").rstrip(",").strip()):
+        return text
+    text = text.rstrip(".").strip()
+    text = re.sub(r"\bet\s+al\.?\s*,?\s*", "et al ", text)  # "et al.," / "et al," -> "et al"
+    text = re.sub(r",\s*(?=(?:19|20)\d\d[a-z]?$)", " ", text)  # "Smith, 2023" -> "Smith 2023"
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def problem_with_published(name: str) -> Optional[str]:
+    """What is wrong with a published citation key, or None if it is spelled MalAvi's way."""
+    text = (name or "").strip()
+    if not text or is_unpublished(text):
+        return None
+    form = published_form(text)
+    if form == text:
+        return None
+    return (f"{text!r} is not how MalAvi spells a citation key: no comma before the year "
+            f"and no period after 'et al'. Write {form!r}, so the study files with every "
+            f"other record that cites it.")

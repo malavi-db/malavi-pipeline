@@ -23,7 +23,7 @@ malaviR:
   source_path: /mnt/ellisbiostore/malaviR
   github: vincenzoaellis/malaviR
   # Pinned bundled release; "latest" lets malaviR pick the newest it ships.
-  release: "2026-03-23"
+  release: "2026-09-15"
 
 # -----------------------------------------------------------------------------
 # The five MalAvi tables, keyed by the snake_case slug used in exported files.

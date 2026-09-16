@@ -257,9 +257,16 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set],
         if "contains_stop_codon" in res.flags:
             issue("warn", "sequence_stop_codon",
                   f"{name}: {res.n_stop_codons} stop codon(s) in the reference frame.", name)
+        if "longer_than_window" in res.flags:
+            # Not a fault: the window was found and checked. The submitter still has to
+            # deposit and name the window, not the whole sequence, so it is said.
+            note = next((n for n in res.notes if "barcode window is positions" in n),
+                        "longer than the barcode window")
+            issue("warn", "sequence_longer_than_window", f"{name}: {note}", name)
         if res.verdict == "unplaceable":
             issue("error", "sequence_unplaceable",
-                  f"{name}: could not be registered against the reference alignment.", name)
+                  f"{name}: {res.notes[-1] if res.notes else 'could not be placed against the reference alignment.'}",
+                  name)
 
     # ---- cross-sheet agreement ------------------------------------------
     for name in declared:
@@ -316,7 +323,56 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set],
             problem = reference_names.problem_with(name)
             if problem:
                 issue("warn", "reference_unpubl_malformed", problem, name)
+        # A published citation key spelled any way but MalAvi's is a second study to
+        # every consumer that joins on the name. Warn, name the spelling that will be
+        # stored, and say whether MalAvi already holds the study under it.
+        held = _reference_names_in_store()
+        for name in names:
+            if not name:
+                continue
+            problem = reference_names.problem_with_published(name)
+            form = reference_names.published_form(name)
+            if problem:
+                if form in held:
+                    problem += (f" MalAvi already holds {form!r}: these records will file "
+                                f"under that study.")
+                issue("warn", "reference_name_form", problem, name)
+            elif form in held and not reference_names.is_unpublished(form):
+                issue("info", "reference_already_in_malavi",
+                      f"{form!r} is already a study in MalAvi; these records will be "
+                      f"added to it.", name)
     return out
+
+
+def _reference_names_in_store() -> set:
+    """Every REFERENCE_NAME the record store holds, or an empty set without a store."""
+    try:
+        from malavi_curation.release_store import TABLES, read_table, store_dir
+        rows = read_table(store_dir(repo_root()), TABLES["references"])
+    except Exception:       # noqa: BLE001 - a missing store must not fail the screen
+        return set()
+    return {(row.get("REFERENCE_NAME") or "").strip() for row in rows}
+
+
+def use_windows(submission: dict, reports: List[dict]) -> None:
+    """Give every downstream check the barcode window the screen located.
+
+    Mutates ``submission["sequences"]`` in place: where the screen flagged
+    ``longer_than_window``, ``sequence_clean`` becomes the placed window (the
+    ``registered`` sequence, 479 bp) and ``sequence_window`` records which positions of
+    the submitted sequence that is. The submitted sequence itself is kept in
+    ``sequence``. Nothing else changes, so a barcode-length sequence is untouched.
+    """
+    windows = {}
+    for report in reports:
+        for entry in report.get("sequences", []):
+            if "longer_than_window" in (entry.get("flags") or []) and entry.get("registered"):
+                windows[entry.get("label")] = (entry["registered"], entry.get("window"))
+    for item in submission.get("sequences", []):
+        hit = windows.get(item.get("lineage_name"))
+        if hit:
+            item["sequence_clean"] = hit[0].replace("-", "N")
+            item["sequence_window"] = hit[1]
 
 
 def offer_free_names(reports: List[dict], known: Optional[set],
@@ -599,6 +655,10 @@ def main(argv=None) -> int:
             # The full check suite over the same submission: the gate, the row flags,
             # the malaviR validators and this screen, all reporting in one vocabulary.
             # Anything that could not run says so rather than passing quietly.
+            # A sequence longer than the window was checked on the window the screen
+            # found inside it; the R screen (malaviR::lineage_qc) has to see that same
+            # window, or it reports "wrong length" about a sequence that was placed.
+            use_windows(submissions[0], reports)
             run = run_checks(submissions[0], screen=reports,
                              check_online=args.online, run_r=not args.no_r)
             print()

@@ -112,7 +112,7 @@ def main(argv=None) -> int:
     # ---------------------------------------------------------------------------------
     inbox = submissions_inbox(root)
     entries = ledger.load(inbox) if ledger.ledger_path(inbox).is_file() else None
-    gate = release_gate.check(store, entries)
+    gate = release_gate.check(store, entries, release=args.release)
 
     refusals: list = []
     if gate.ok and gate.publishing:
@@ -163,9 +163,17 @@ def main(argv=None) -> int:
     # What the release was allowed to carry, recorded beside what it carries. A release
     # report that cannot say which submissions it published, and on whose approval, is not
     # a record of anything.
+    # "submissions_published" is what this EDITION publishes, which is not only what this
+    # BUILD marks released: a rebuild of the same edition (after a correction, say) finds
+    # its submissions already marked, and reporting none was a false record of what the
+    # release carried -- exactly the failure described at "Mark them released LAST" below.
+    # The rows themselves settle it: every row of such a submission carries this
+    # release's tag in _added. Which of them this build marks is recorded separately.
     report["approval"] = {
         "seed_rows": gate.exempt_rows,
-        "submissions_published": list(gate.publishing),
+        "submissions_published": sorted(set(gate.publishing)
+                                        | set(gate.released_by_this_edition)),
+        "already_marked_released": list(gate.released_by_this_edition),
         "violations": [v.describe() for v in gate.violations],
         "gate_overridden": bool(args.override_gate and (gate.violations or refusals)),
     }

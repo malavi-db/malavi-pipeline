@@ -229,6 +229,21 @@ CHECKS: Dict[str, Check] = {c.id: c for c in [
            "The Reference sheet carries the study the data come from. An unpublished "
            "study names itself '<Authors> unpubl'.",
            "submission", Severity.BLOCKING),
+    _check("sequence_longer_than_window", "Long sequences are checked on their barcode window",
+           "A sequence longer than the 479 bp MalAvi window (a longer amplicon, a "
+           "mitochondrial genome) has the window located inside it, on either strand, "
+           "and is checked on that window. The name and the deposit refer to the window.",
+           "name", Severity.WARNING),
+    _check("reference_name_form", "Published citation keys are spelled MalAvi's way",
+           "A published study is cited as '<Authors> <year>' ('Beadell et al 2009', "
+           "'Hellgren 2005'), with no comma before the year and no period after 'et "
+           "al', because every table joins on that string and a second spelling is a "
+           "second study.",
+           "submission", Severity.WARNING),
+    _check("reference_already_in_malavi", "The study is already in MalAvi",
+           "The cited study already has a reference row, so these records join the "
+           "ones MalAvi holds for it rather than starting a new study.",
+           "submission", Severity.INFO),
     _check("reference_unpubl_malformed", "Unpublished references follow the convention",
            "A reference held before publication is named '<Authors> unpubl', so that "
            "every unpublished study in MalAvi can be found the same way.",
@@ -597,11 +612,63 @@ _R_CHECK_IDS = ("host_name_resolves", "host_geography_plausible",
 _SCREEN_CHECK_IDS = frozenset({
     "name_already_in_malavi", "name_claimed_by_another_submission",
     "sequence_is_known_lineage", "sequence_identity_unresolved", "sequence_needs_reframing",
-    "sequence_stop_codon", "sequence_unplaceable", "accession_malformed",
+    "sequence_stop_codon", "sequence_unplaceable", "sequence_longer_than_window",
+    "accession_malformed",
     "lineage_without_sequence", "sequence_without_declaration", "record_without_country",
     "record_without_prevalence", "lineage_without_host_record", "reference_missing",
-    "reference_unpubl_malformed",
+    "reference_unpubl_malformed", "reference_name_form", "reference_already_in_malavi",
 })
+
+
+# Flags from malaviR's lineage_qc() that describe how far a sequence sits from its
+# nearest known relatives, or record what the screen did to it, rather than name
+# something a curator could act on.
+#
+# Distance is the reason these are here. A sequence that is far from everything in MalAvi
+# is either a mistake or a discovery, and no flag in this group tells the two apart --
+# which is exactly why malaviR 1.2.0 stopped rolling them into a plausibility score. A
+# report that raises them as findings would flag every genuinely new lineage, and a
+# curator who sees that a few times stops reading the section.
+#
+# Matched on the tail of the flag, because malaviR prefixes the counted ones with their
+# count ("3_nonsynonymous_changes_vs_nearest_lineage").
+_QC_FLAGS_DESCRIBING_DISTANCE = (
+    "near_known_lineage",
+    "moderately_divergent_from_known_lineages",
+    "highly_divergent_from_known_lineages",
+    "nonsynonymous_changes_vs_nearest_lineage",
+    "second_codon_position_changes_vs_nearest_lineage",
+    "transversions_vs_nearest_lineage",
+)
+
+# Flags that record what the screen did, not what it found. "placed_in_malavi_frame" is
+# malaviR's note that a short barcode was padded into the 479 bp window, which is ordinary
+# -- most MalAvi lineages cover only part of it -- and the unknown-amino-acid flag is the
+# arithmetic consequence of that padding, so it fires on every partial.
+_QC_FLAGS_DESCRIBING_PROCESS = (
+    "placed_in_malavi_frame",
+    "exact_match_to_known_lineage",
+    "contains_unknown_amino_acid_after_translation",
+)
+
+
+def _substantive_qc_flags(flags: Optional[str]) -> List[str]:
+    """The lineage_qc flags that name something a curator could act on.
+
+    Everything in ``_QC_FLAGS_DESCRIBING_DISTANCE`` and
+    ``_QC_FLAGS_DESCRIBING_PROCESS`` is dropped. What survives is the concrete
+    material: ambiguity codes and gaps, a suspected frame shift, bases never seen
+    at their site, a match too short to trust, no overlap at all.
+    """
+    ignorable = _QC_FLAGS_DESCRIBING_DISTANCE + _QC_FLAGS_DESCRIBING_PROCESS
+    out: List[str] = []
+    for flag in (f.strip() for f in str(flags or "").split(";")):
+        if not flag:
+            continue
+        if any(flag == ignore or flag.endswith("_" + ignore) for ignore in ignorable):
+            continue
+        out.append(flag)
+    return out
 
 
 def _r_checks(submission: Dict[str, Any], version: str) -> List[CheckResult]:
@@ -708,6 +775,17 @@ def _r_checks(submission: Dict[str, Any], version: str) -> List[CheckResult]:
     # Sequence QC. A call of "known_lineage" here is not a finding: the screen already
     # reports an identical sequence as a blocking issue, and saying it twice in two
     # vocabularies is how a report becomes something a curator skims.
+    #
+    # The other silent case used to be "plausible_new_lineage", malaviR's top score band.
+    # malaviR 1.2.0 removed the score, on the evidence that it measured divergence rather
+    # than plausibility, and with it that band: an ordinary new lineage now comes back
+    # "no_exact_match" like everything else that is not identical to a known sequence. So
+    # the decision of what deserves a curator's attention is made here, where the purpose
+    # is known, instead of being read off a number that did not mean what it said.
+    #
+    # The rule: a flag earns a finding unless it only restates how far the sequence sits
+    # from its neighbours. Being distant from every known lineage is what a new lineage
+    # is, and a report that flags novelty as a problem trains a curator to ignore it.
     sequence_findings: List[Finding] = []
     qc_errors: List[str] = []
     source_by_lineage = {s.get("lineage_name"): s.get("source") for s in sequences}
@@ -716,7 +794,9 @@ def _r_checks(submission: Dict[str, Any], version: str) -> List[CheckResult]:
             qc_errors.append(str(entry["error"]))
             continue
         call = entry.get("call")
-        if call in ("known_lineage", "plausible_new_lineage"):
+        if call == "known_lineage":
+            continue
+        if call == "no_exact_match" and not _substantive_qc_flags(entry.get("flags")):
             continue
         # malaviR's own message leads, when there is one. It is written precisely to
         # stop a curator over-reading the flag list: a sequence pasted outside the
@@ -748,8 +828,12 @@ def _r_checks(submission: Dict[str, Any], version: str) -> List[CheckResult]:
             # "call" is carried so the report can key the calls it actually shows,
             # rather than re-deriving them by parsing the message it just built.
             evidence={key: entry.get(key) for key in
-                      ("call", "score", "nearest_lineage", "nearest_distance",
+                      ("call", "nearest_lineage", "nearest_distance", "n_comparable",
                        "n_mutations", "n_nonsynonymous", "n_stop_codons",
+                       # what the removed score was made of, now reported as itself
+                       "n_invariant_site_changes", "n_bases_never_observed",
+                       "n_rare_site_bases", "n_second_position_changes",
+                       "n_transversions",
                        # The per-window parentage behind a chimera call. Without it the
                        # call is an assertion a curator cannot check.
                        "chimera_parent_switches", "chimera_delta",

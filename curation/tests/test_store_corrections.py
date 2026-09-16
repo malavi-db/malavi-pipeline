@@ -54,6 +54,12 @@ class TestSelection:
             store, _correction(selector_value="Mata Seca State Park"))
         assert [change.record for change in changes] == ["HST-1"]
 
+    def test_several_record_ids_select_exactly_those_rows(self):
+        store = _store(_host("HST-1"), _host("HST-2"), _host("HST-3"))
+        changes = store_corrections.plan(
+            store, _correction(selector_kind="record", selector_value="HST-1, HST-3"))
+        assert [change.record for change in changes] == ["HST-1", "HST-3"]
+
     def test_a_record_id_selects_exactly_one_row(self):
         store = _store(_host("HST-1"), _host("HST-2"))
         changes = store_corrections.plan(

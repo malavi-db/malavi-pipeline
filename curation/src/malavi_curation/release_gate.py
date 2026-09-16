@@ -71,6 +71,12 @@ class GateResult:
     # Submissions whose rows are in the store and which the ledger says may be published.
     # These are the entries a successful build marks released.
     publishing: List[str] = field(default_factory=list)
+    # Submissions the ledger already marks released whose rows all carry THIS release's
+    # tag: an earlier build of this same edition published them. A rebuild (after a
+    # correction, say) must still report them as published by this edition, or the
+    # edition report -- the only record of what the release carried -- says the release
+    # publishes nothing, which is false. Nothing is marked for these; that is done.
+    released_by_this_edition: List[str] = field(default_factory=list)
     # Rows accounted for by an exempt source, reported so the operator can see that a
     # release is seed-only rather than assuming the check found nothing to look at.
     exempt_rows: int = 0
@@ -91,9 +97,13 @@ def sources_in_store(store: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[s
     for table_name, rows in sorted(store.items()):
         for row in rows:
             source = str(row.get("_source") or "").strip() or NO_SOURCE
-            record = found.setdefault(source, {"rows": 0, "tables": set()})
+            record = found.setdefault(source, {"rows": 0, "tables": set(), "added": set()})
             record["rows"] += 1
             record["tables"].add(table_name)
+            # The release tag each row first appeared in. A source whose every row carries
+            # the tag of the release being built was published by THIS edition, whatever
+            # the ledger already says about it (see check()).
+            record["added"].add(str(row.get("_added") or "").strip())
     return found
 
 
@@ -157,11 +167,17 @@ def admissibility(source: str,
 
 
 def check(store: Dict[str, List[Dict[str, Any]]],
-          entries: Optional[Dict[str, ledger.Entry]]) -> GateResult:
+          entries: Optional[Dict[str, ledger.Entry]],
+          release: Optional[str] = None) -> GateResult:
     """Whether every row in the store is one somebody agreed to publish.
 
     The rule itself lives in :func:`admissibility`; this counts the rows each verdict
     covers, which is what the operator reading a refusal actually needs.
+
+    ``release`` is the tag of the edition being built. With it, a source the ledger
+    already marks released is still reported as published by this edition when every
+    one of its rows was first added in this release -- the rebuild case. Without it,
+    nothing is reported under that heading.
     """
     result = GateResult()
 
@@ -177,9 +193,15 @@ def check(store: Dict[str, List[Dict[str, Any]]],
         elif verdict == REFUSED:
             result.violations.append(Violation(
                 source=source, reason=reason, rows=rows, tables=tables))
-        # RELEASED: nothing to count and nothing to refuse.
+        elif verdict == RELEASED:
+            # Nothing to refuse and nothing to mark. But if every row of it first
+            # appeared in the release being built, an earlier build of this edition is
+            # what released it, and this edition's report must still say so.
+            if release and record["added"] == {release}:
+                result.released_by_this_edition.append(source)
 
     result.publishing.sort()
+    result.released_by_this_edition.sort()
     return result
 
 

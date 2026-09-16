@@ -261,3 +261,33 @@ def test_a_submission_that_was_never_embargoed_says_so(publish_reference, tmp_pa
     lines = publish_reference.lift_embargoes(tmp_path, [entry.submission_id],
                                              "Ellis et al 2027", apply=True)
     assert "was not embargoed" in lines[0]
+
+
+class TestPublishedForm:
+    """Review 2026-09-15, 3.2: a published citation key entered the store as typed."""
+
+    def test_punctuation_around_et_al_and_before_the_year_is_normalized(self):
+        from malavi_curation.reference_names import published_form
+        assert published_form("Vieira et al., 2023") == "Vieira et al 2023"
+        assert published_form("Vieira et al. 2026a") == "Vieira et al 2026a"
+        assert published_form("Vieira et al, 2024") == "Vieira et al 2024"
+        assert published_form("Smith, 2023") == "Smith 2023"
+        assert published_form("  Baillie  & Brunton 2011 ") == "Baillie & Brunton 2011"
+
+    def test_names_already_in_malavi_form_are_untouched(self):
+        from malavi_curation.reference_names import published_form
+        for name in ("Hellgren 2005", "Beadell et al 2009", "Loiseau et al 2012b",
+                     "Grudens & Islam 2026", "Yildirim, Ciloglu et al 2019"):
+            assert published_form(name) == name
+
+    def test_unpublished_and_yearless_names_are_left_alone(self):
+        from malavi_curation.reference_names import published_form
+        assert published_form("Barrow et al unpubl") == "Barrow et al unpubl"
+        assert published_form("Jaime A. Muriel Redondo") == "Jaime A. Muriel Redondo"
+        assert published_form("Sasaki et al") == "Sasaki et al"
+
+    def test_problem_names_the_canonical_form(self):
+        from malavi_curation.reference_names import problem_with_published
+        assert "'Vieira et al 2023'" in problem_with_published("Vieira et al., 2023")
+        assert problem_with_published("Vieira et al 2023") is None
+        assert problem_with_published("Barrow et al unpubl") is None

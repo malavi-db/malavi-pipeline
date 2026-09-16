@@ -871,7 +871,8 @@ CHECK_GROUPS = (
         "accession_collision", "accession_resolves")),
     ("Sequences", (
         "sequence_is_known_lineage", "sequence_identity_unresolved", "sequence_qc",
-        "sequence_needs_reframing", "sequence_stop_codon", "sequence_unplaceable")),
+        "sequence_needs_reframing", "sequence_stop_codon", "sequence_unplaceable",
+        "sequence_longer_than_window")),
     ("Hosts and geography", (
         "host_geography_plausible", "host_not_in_malavi", "host_name_resolves",
         "host_missing", "host_binomial", "country_not_in_malavi", "country_missing",
@@ -881,6 +882,7 @@ CHECK_GROUPS = (
     ("Vectors", ("vector_missing", "vector_sanity", "vector_method")),
     ("The submission itself", (
         "headers_intact", "reference_missing", "reference_unpubl_malformed",
+        "reference_name_form", "reference_already_in_malavi",
         "source_reprinted", "source_uncertain",
         "values_normalized", "lineage_missing", "records_unlinked")),
 )
@@ -904,7 +906,11 @@ FINDING_HEADLINES = {
     "sequence_qc": "{subjects}: unusual for a cytochrome b barcode",
     "sequence_needs_reframing": "{subjects} may not be in the standard reading frame",
     "sequence_stop_codon": "{subjects} contains a stop codon",
+    "reference_name_form": "{subjects} is not spelled the way MalAvi cites a study",
+    "reference_already_in_malavi": "{subjects} is a study MalAvi already holds",
     "sequence_unplaceable": "{subjects} could not be placed against the alignment",
+    "sequence_longer_than_window":
+        "{subjects} is longer than the barcode window; checked on the window found inside it",
     "accession_malformed": "{subjects} has a malformed GenBank accession",
     "accession_collision": "{subjects} uses an accession already recorded elsewhere",
     "lineage_accession_conflict": "{subjects} disagrees with MalAvi about its accession",
@@ -956,13 +962,34 @@ CHIMERA_FALSE_POSITIVE_RATE = "23% (58 of 250 tested)"
 
 # malaviR's lineage_qc calls, as its final-call chain assigns them (R/lineage_qc.R):
 # a stop codon in frame wins outright, then an exact match, then a chimera flag, and
-# only then the plausibility score, banded at 0.85 / 0.60 / 0.35.
+# everything else is the residual.
+#
+# malaviR 1.2.0 removed the plausibility score and the four calls that were bands of it
+# (plausible_new_lineage 0.85+, review 0.60-0.85, strong_warning 0.35-0.60,
+# possible_error below 0.35). Re-screening 60 curated lineages already in MalAvi put 26%
+# of them in the bottom two bands, because no term in the score was normalized by
+# distance: it measured divergence, which is what a new lineage has. The four glosses are
+# kept below so an archived report built before 1.2.0 still renders with its own words.
 #
 # Each call gets its own words and its own gloss. Two of them used to share a phrase,
-# which meant a chimera and a low score were indistinguishable on the page, and the
-# ladder had no stated order so "review" and "Worth a close look" looked unrelated.
-# If the thresholds in malaviR change, the score bands quoted here must change with them.
+# which meant a chimera and a low score were indistinguishable on the page.
 QC_CALLS: Dict[str, tuple] = {
+    "contains_stop_codon": (
+        "Invalid — stop codon in reading frame",
+        "The sequence translates with a stop codon. Usually the sequence was pasted "
+        "outside the 479 bp window rather than anything wrong with the parasite — check "
+        "the framing before reading anything else here."),
+    "no_exact_match": (
+        "Not in MalAvi",
+        "Nothing in the release is identical to this sequence over the positions both "
+        "cover. That is a statement about the database, not a verdict on the sequence: "
+        "it is what a genuinely new lineage looks like and also what a mistyped one "
+        "looks like. The counts beneath say how unusual it is; they do not say which."),
+    "invalid_sequence": (
+        "Could not be screened",
+        "The sequence is not the expected barcode length and could not be placed in the "
+        "479 bp frame, so none of the per-site or per-codon checks could run."),
+    # --- pre-1.2.0 calls, kept so archived reports still render ---
     "invalid_or_strong_warning": (
         "Invalid — stop codon in reading frame",
         "The sequence translates with a stop codon. Usually the sequence was pasted "
@@ -983,18 +1010,20 @@ QC_CALLS: Dict[str, tuple] = {
         "sequences that are certainly not chimeras are called one."),
     "plausible_new_lineage": (
         "Plausible new lineage",
-        "Score of 0.85 or better: nothing about the sequence itself looks wrong."),
+        "Score of 0.85 or better (malaviR before 1.2.0): nothing about the sequence "
+        "itself looked wrong."),
     "review": (
         "Worth a look",
-        "Score between 0.60 and 0.85. Something is mildly unusual — the notes beneath "
-        "the alignment say what."),
+        "Score between 0.60 and 0.85 (malaviR before 1.2.0). Something is mildly "
+        "unusual — the notes beneath the alignment say what."),
     "strong_warning": (
         "Worth a close look",
-        "Score between 0.35 and 0.60. Several unusual features at once."),
+        "Score between 0.35 and 0.60 (malaviR before 1.2.0). Several unusual features "
+        "at once."),
     "possible_error": (
         "Probably an error",
-        "Score below 0.35. More likely a sequencing or transcription problem than a "
-        "real parasite."),
+        "Score below 0.35 (malaviR before 1.2.0). More likely a sequencing or "
+        "transcription problem than a real parasite."),
 }
 
 

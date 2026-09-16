@@ -178,6 +178,13 @@ fi
 # a PUBLIC remote and the file is internal. That makes this the only copy.
 if [[ -f "${MALAVIR_DIR}/DATA_ISSUES.md" ]]; then
   cp -p "${MALAVIR_DIR}/DATA_ISSUES.md" "${LIFEBOAT_DIR}/state/malaviR_DATA_ISSUES.md"
+
+  # The Lund master database Staffan sent on 2026-09-15, which the record store now
+  # descends from. Gitignored, so no bundle carries it; this is its only other copy.
+  if compgen -G "${PROJECT_DIR}/*.sqlite" > /dev/null; then
+    cp -p "${PROJECT_DIR}"/*.sqlite "${LIFEBOAT_DIR}/state/"
+    log "    master database      $(du -shc "${PROJECT_DIR}"/*.sqlite | tail -1 | cut -f1)"
+  fi
   log "    malaviR DATA_ISSUES.md"
 fi
 

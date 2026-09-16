@@ -69,6 +69,8 @@ curation/close_submission.py
 curation/correct_store.py
 curation/edition_report.py
 curation/enroll.py
+curation/import_master_db.py
+curation/lund_changes_report.py
 curation/fetch_oa_articles.py
 curation/fetch_submissions.py
 curation/fetch_verdicts.py

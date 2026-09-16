@@ -175,14 +175,25 @@ qc_sequences <- function(sequences, version = "latest") {
       # matches which lineage -- is exactly what makes it judgable.
       qc <- lineage_qc(as.character(seq_text), version = version, details = TRUE)
       summary_row <- as.list(qc$summary[1, , drop = FALSE])
+      # malaviR 1.2.0 dropped qc$score and the four calls that were bands of it. What
+      # replaced it is the set of counts the score was computed from, each of which is
+      # a checkable fact; they are all in qc$summary now, so they are carried through
+      # verbatim rather than summarized again here. Deciding which of them deserves a
+      # curator's attention happens in checks.py, where the purpose is known.
+      num <- function(x) if (is.null(x) || !length(x)) NA_real_ else as.numeric(x)
       entry <- list(lineage_name = label,
            call = as.character(qc$call),
-           score = as.numeric(qc$score),
            flags = paste(qc$flags, collapse = "; "),
            nearest_lineage = summary_row$nearest_lineage,
            nearest_distance = summary_row$nearest_distance,
+           n_comparable = num(summary_row$n_comparable),
            n_mutations = summary_row$n_mutations,
            n_nonsynonymous = summary_row$n_nonsynonymous,
+           n_second_position_changes = num(summary_row$n_second_position_changes),
+           n_transversions = num(summary_row$n_transversions),
+           n_invariant_site_changes = num(summary_row$n_invariant_site_changes),
+           n_bases_never_observed = num(summary_row$n_bases_never_observed),
+           n_rare_site_bases = num(summary_row$n_rare_site_bases),
            n_stop_codons = summary_row$n_stop_codons,
            message = if (!is.null(qc$message)) as.character(qc$message) else NULL)
 

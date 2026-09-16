@@ -317,15 +317,22 @@ def diff_table(table: str, previous: Sequence[Dict[str, str]],
 # ---------------------------------------------------------------------------
 
 def _host_binomial(row: Dict[str, str]) -> str:
-    """``Genus species`` for a host record, from the release's two columns.
+    """The host's binomial, from ``SPECIES_NAME``; ``GENUS_NAME`` only fills a bare name.
 
-    ``SPECIES_NAME`` in MalAvi's host table already holds the binomial in the great
-    majority of rows, so the genus is prepended only when it is not already there. This
-    is presentation, not identity: nothing is matched on it.
+    ``SPECIES_NAME`` in MalAvi's host table holds the binomial ("Pipile jacutinga") or a
+    genus-level placeholder ("Sphenisciformes spp"), and it is the join key everything
+    else uses. ``GENUS_NAME`` is a separate, sometimes wrong, column: four rows carried
+    ``DUMMY_GENUS_1``/``Creadion``/``Agelastes`` beside a correct binomial, and an earlier
+    version of this function prepended the genus whenever the species did not start with
+    it -- so correcting those four genus cells read, in the public edition notes, as four
+    host species retired and four gained. The genus is prepended only when the species
+    cell is a single word and cannot stand alone.
     """
     genus, species = _text(row.get("GENUS_NAME")), _text(row.get("SPECIES_NAME"))
     if not species:
         return genus
+    if " " in species:
+        return species
     if genus and not species.lower().startswith(genus.lower()):
         return f"{genus} {species}"
     return species

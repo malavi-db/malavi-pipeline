@@ -148,6 +148,41 @@ def test_an_already_released_submission_is_not_published_twice(registry):
     assert result.publishing == []
 
 
+def store_added_in(release, *sources):
+    """A store whose rows carry the given ``_source`` values and one ``_added`` tag."""
+    store = store_with(*sources)
+    for row in store["host_records"]:
+        row["_added"] = release
+    return store
+
+
+def test_a_rebuild_of_the_same_edition_still_reports_what_it_published(registry):
+    """The report is the only record of what a release carried.
+
+    The first build of an edition marks its submissions released. A rebuild of that same
+    edition (after a correction) finds them already marked and, until 2026-09-16, reported
+    "this release publishes no submission" -- false, and by then the only record. The rows
+    say which edition first carried them, so the gate reads that instead.
+    """
+    entry = approved_entry(registry)
+    ledger.transition(entry, "released", "maintainer", config=CLOCKS)
+    entries = {entry.submission_id: entry}
+
+    same = release_gate.check(store_added_in("2026-09-15", "seed", entry.submission_id),
+                              entries, release="2026-09-15")
+    assert same.ok
+    assert same.publishing == []                       # nothing left to mark
+    assert same.released_by_this_edition == [entry.submission_id]
+
+    later = release_gate.check(store_added_in("2026-09-15", "seed", entry.submission_id),
+                               entries, release="2026-12-01")
+    assert later.released_by_this_edition == []        # an earlier edition's submission
+
+    untagged = release_gate.check(store_with("seed", entry.submission_id), entries,
+                                  release="2026-09-15")
+    assert untagged.released_by_this_edition == []     # no _added: no claim is made
+
+
 # ------------------------------------------------------------------ the rehearsal step
 
 def test_the_publish_hold_is_caught_before_anything_is_built(registry):
@@ -275,6 +310,42 @@ def test_the_success_path_marks_the_submission_released(build_release_cli, tmp_p
     after = ledger.load(inbox)[entry.submission_id]
     assert after.state == "released"
     assert after.name_state == "confirmed"
+
+
+def test_a_rebuild_reports_the_submission_without_marking_it_again(build_release_cli,
+                                                                   tmp_path, registry,
+                                                                   monkeypatch, capsys):
+    """The CLI end of the rebuild case: the report lists it, the ledger is untouched."""
+    entry = approved_entry(registry)
+    ledger.transition(entry, "released", "maintainer", config=CLOCKS)
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    ledger.save(inbox, {entry.submission_id: entry})
+    written = ledger.ledger_path(inbox).read_text()
+
+    monkeypatch.setattr(build_release_cli, "read_store",
+                        lambda _dir: store_added_in("2026-08-10", "seed",
+                                                    entry.submission_id))
+    monkeypatch.setattr(build_release_cli, "store_dir", lambda _root: tmp_path / "store")
+    monkeypatch.setattr(build_release_cli, "submissions_inbox", lambda _root: inbox)
+    monkeypatch.setattr(build_release_cli, "load_config", lambda: {"review": CLOCKS})
+    monkeypatch.setattr(build_release_cli, "build_release",
+                        lambda store, release, destination: {
+                            "release": release, "rows": {"host_records": 2},
+                            "archive": str(destination / "x.zip"),
+                            "alignment_records": 0})
+
+    destination = tmp_path / "releases"
+    destination.mkdir()
+    code = build_release_cli.main(["--release", "2026-08-10",
+                                   "--destination", str(destination)])
+
+    assert code == 0, capsys.readouterr().err
+    report = json.loads((destination / "release_report_2026-08-10.json").read_text())
+    assert report["approval"]["submissions_published"] == [entry.submission_id]
+    assert report["approval"]["already_marked_released"] == [entry.submission_id]
+    assert "marked_released" not in report["approval"]
+    assert ledger.ledger_path(inbox).read_text() == written
 
 
 def test_the_rehearsal_uses_the_reason_the_real_write_will_pass(registry):

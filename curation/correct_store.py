@@ -64,8 +64,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="Which store table holds the rows to correct.")
 
     selector = parser.add_mutually_exclusive_group(required=True)
-    selector.add_argument("--record", metavar="RECORD_ID",
-                          help="Correct exactly one row, by its RECORD_ID.")
+    selector.add_argument("--record", metavar="RECORD_ID", action="append",
+                          help="Correct one row, by its RECORD_ID. May be given more than "
+                               "once for one decision that lands on several named rows.")
     selector.add_argument("--site", metavar="SITE_NAME",
                           help="Correct every row at this site. Matched exactly, so "
                                "'Mata Seca' does not also select 'Mata Seca II'.")
@@ -106,7 +107,7 @@ def main(argv=None) -> int:
     column, new_value = split_assignment(args.assignment, "--set")
 
     if args.record:
-        kind, selector_value, selector_column = "record", args.record, ""
+        kind, selector_value, selector_column = "record", ",".join(args.record), ""
     elif args.site:
         kind, selector_value, selector_column = "site", args.site, ""
     else:

@@ -118,8 +118,13 @@ def matcher(correction: Correction) -> Callable[[Dict[str, Any]], bool]:
     Selecting by the clean value is also what an operator would try first.
     """
     if correction.selector_kind == "record":
-        target = _text(correction.selector_value)
-        return lambda row: record_id(row) == target
+        # One id, or several separated by commas: one decision that happens to land on a
+        # handful of rows no column value singles out (the 38 records of one study whose
+        # reference name another study also carries). Still exact, still listed in full
+        # in the log, and replayable from it.
+        targets = {_text(part) for part in correction.selector_value.split(",")
+                   if _text(part)}
+        return lambda row: record_id(row) in targets
     if correction.selector_kind == "site":
         target = _text(correction.selector_value)
         return lambda row: _text(row.get("SITE_NAME")) == target

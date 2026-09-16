@@ -211,3 +211,36 @@ def test_seeding_twice_over_a_populated_store_is_refused(tmp_path):
 
     with pytest.raises(ValueError, match="already holds records"):
         write_store(tmp_path, {"references": rows}, allow_overwrite=False)
+
+
+class TestRetiredIdsAreNeverReissued:
+    """REGRESSION (review 2026-09-15, 1.2/3.3): assign_ids started at 1 and filled the
+    first gap, so a retired row's id went to the next record ingested."""
+
+    def test_a_gap_below_the_maximum_is_not_filled(self):
+        rows = [dict(_row(LINEAGE_NAME="A"), RECORD_ID="HST-000001"),
+                dict(_row(LINEAGE_NAME="C"), RECORD_ID="HST-000003"),
+                _row(LINEAGE_NAME="D")]
+        out = assign_ids(SPEC, rows)
+        assert out[2]["RECORD_ID"] == "HST-000004", "HST-000002 was retired; leave it"
+
+    def test_the_high_water_mark_survives_removing_the_highest_row(self, tmp_path):
+        from malavi_curation.release_store import (
+            read_high_water, write_store, TABLES)
+        store = {name: [] for name in TABLES}
+        store["host_records"] = assign_ids(SPEC, [_row(LINEAGE_NAME="A"),
+                                                  _row(LINEAGE_NAME="B")])
+        write_store(tmp_path, store)
+        assert read_high_water(tmp_path)["host_records"] == 2
+        # retract the highest row, write again: the mark must not drop
+        store["host_records"] = store["host_records"][:1]
+        write_store(tmp_path, store)
+        assert read_high_water(tmp_path)["host_records"] == 2
+        # and a new row minted against the mark skips the retired number
+        floor = read_high_water(tmp_path)["host_records"]
+        out = assign_ids(SPEC, store["host_records"] + [_row(LINEAGE_NAME="C")], floor=floor)
+        assert out[-1]["RECORD_ID"] == "HST-000003"
+
+    def test_an_explicit_start_still_wins(self):
+        out = assign_ids(SPEC, [_row(LINEAGE_NAME="A")], start=10)
+        assert out[0]["RECORD_ID"] == "HST-000010"

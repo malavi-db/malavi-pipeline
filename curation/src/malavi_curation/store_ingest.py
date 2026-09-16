@@ -28,6 +28,7 @@ here would put an unsourced value into a release under a submitter's name.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -202,11 +203,32 @@ def coordinates_by_site(workbook) -> Dict[str, str]:
     found: Dict[str, str] = {}
     for _row_number, values in body:
         name = (template_adapter.cell(header, values, "SITE_NAME") or "").strip()
-        latitude = (template_adapter.cell(header, values, "LATITUDE") or "").strip()
-        longitude = (template_adapter.cell(header, values, "LONGITUDE") or "").strip()
+        latitude = signed_coordinate(template_adapter.cell(header, values, "LATITUDE"))
+        longitude = signed_coordinate(template_adapter.cell(header, values, "LONGITUDE"))
         if name and latitude and longitude:
             found.setdefault(name, f"{latitude}, {longitude}")
     return found
+
+
+_HEMISPHERE = re.compile(r"^\s*(-?)\s*(.*?)\s*([NSEWnsew])\s*$")
+
+
+def signed_coordinate(text: Optional[str]) -> str:
+    """One coordinate half in the release's own form: a sign, never a hemisphere letter.
+
+    Every cell MalAvi has published reads "-021°46.98000'" -- south and west as a leading
+    minus. The template lets a submitter write "46°14.99167'N" or "12°30.00000'S", and
+    the first ingested submission stored those letters, which no reader of the column
+    (the map export, malaviR's users) had ever met. The letter becomes the sign here; a
+    value with neither is returned as typed.
+    """
+    value = (text or "").strip()
+    match = _HEMISPHERE.match(value)
+    if not match:
+        return value
+    minus, body, letter = match.group(1), match.group(2).strip(), match.group(3).upper()
+    negative = bool(minus) != (letter in ("S", "W"))
+    return f"-{body}" if negative else body
 
 
 # How a host record lists several alternative names. Measured against the seed: all 553
@@ -241,7 +263,8 @@ def alt_names_by_record(workbook) -> Dict[Tuple[str, str], List[str]]:
         lineage = lineage_cell(header, values, "MalAvi_Name")
         alternative = (template_adapter.cell(
             header, values, "Alternative_Name") or "").strip()
-        reference = (template_adapter.cell(header, values, "Reference") or "").strip()
+        reference = reference_names.published_form(
+            template_adapter.cell(header, values, "Reference"))
         if not lineage or not alternative:
             continue
         names = found.setdefault((lineage, reference), [])
@@ -326,6 +349,9 @@ def _host_rows(workbook, submission_id: str, release: str,
         # join, the rename, the collision refusal -- keys on it, and a host record naming
         # `tumig19` would point at a lineage row named `TUMIG19` and match nothing.
         row["LINEAGE_NAME"] = normalize.lineage_name(row["LINEAGE_NAME"]) or ""
+        # The citation key arrives the same way and is the join key of every table:
+        # spelled MalAvi's way here, or the study is split in two at the first record.
+        row["REFERENCE_NAME"] = reference_names.published_form(row["REFERENCE_NAME"])
 
         genus, species = split_host_species(
             template_adapter.cell(header, values, "HostSpecies"))
@@ -368,7 +394,7 @@ def _host_rows(workbook, submission_id: str, release: str,
         # them. Keyed on the reference as well as the lineage, so a record does not
         # inherit the synonym some other paper used for the same lineage.
         alternative = alternatives.get(
-            (lineage.strip(), (row.get("REFERENCE_NAME") or "").strip()))
+            (lineage.strip(), reference_names.published_form(row.get("REFERENCE_NAME"))))
         if alternative:
             row["ALT_NAME"] = ALT_NAME_SEPARATOR.join(alternative)
 
@@ -748,7 +774,8 @@ def vector_rows(workbook, submission_id: str, release: str
         row["VECTOR_METHOD"] = template_adapter.cell(header, values, "VECTOR_METHOD") or ""
         row["COUNTRY_NAME"] = template_adapter.cell(header, values, "Country") or ""
         row["SITE_NAME"] = template_adapter.cell(header, values, "SiteName") or ""
-        row["REFERENCE_NAME"] = template_adapter.cell(header, values, "Reference") or ""
+        row["REFERENCE_NAME"] = reference_names.published_form(
+            template_adapter.cell(header, values, "Reference"))
         row["_source"] = submission_id
         row["_added"] = release
         rows.append(row)
@@ -773,7 +800,8 @@ def alt_name_rows(workbook, submission_id: str, release: str
         row = {column: "" for column in columns}
         row["LINEAGE_NAME"] = lineage_cell(header, values, "MalAvi_Name")
         row["ALT_NAME"] = template_adapter.cell(header, values, "Alternative_Name") or ""
-        row["REFERENCE_NAME"] = template_adapter.cell(header, values, "Reference") or ""
+        row["REFERENCE_NAME"] = reference_names.published_form(
+            template_adapter.cell(header, values, "Reference"))
         row["_source"] = submission_id
         row["_added"] = release
         rows.append(row)
@@ -812,7 +840,13 @@ def reference_rows(workbook, submission_id: str, release: str
         end = (template_adapter.cell(header, values, "EndPage") or "").strip()
         pages = f"{start}-{end}" if start and end else (start or end)
         row = {column: "" for column in columns}
-        row["REFERENCE_NAME"] = name
+        # Spelled MalAvi's way, so that one study is one key. The screen warned about
+        # the spelling; here it is applied, and said.
+        form = reference_names.published_form(name)
+        if form != name:
+            notes.append(f"{name!r} stored as {form!r}, MalAvi's spelling of a citation "
+                         f"key; every record of this submission cites it that way")
+        row["REFERENCE_NAME"] = form
         row["PUBLICATION_YEAR"] = template_adapter.cell(
             header, values, "PUBLICATION_YEAR") or ""
         row["TITLE"] = normalize.text(
@@ -1030,10 +1064,17 @@ def _placement(sequence: str, reference: Any) -> Tuple[Optional[int], int, int]:
     # the usual margin for one that does not. lineage_resolve widens it for the same reason.
     max_offset = max(sequence_check.MAX_OFFSET,
                      MALAVI_WINDOW - len(sequence) + sequence_check.MAX_OFFSET)
-    offset, _mismatch = sequence_check._register(sequence, reference,
-                                                 max_offset=max_offset)
+    offset = None
+    if len(sequence) <= MALAVI_WINDOW + sequence_check.MAX_OFFSET:
+        offset, _mismatch = sequence_check._register(sequence, reference,
+                                                     max_offset=max_offset)
     if offset is None:
-        return None, 0, 0
+        # A longer sequence, or one on the other strand: find the window anywhere.
+        # The strand is deliberately not corrected here -- the store must hold what
+        # the submitter deposited, and the refusal below says what to do.
+        oriented, offset, _mismatch, reversed_ = sequence_check.locate(sequence, reference)
+        if offset is None or reversed_:
+            return None, 0, 0
     lost_start = -offset if offset < 0 else 0
     lost_end = max(0, max(offset, 0) + len(sequence) - lost_start - MALAVI_WINDOW)
     return offset, lost_start, lost_end
@@ -1087,9 +1128,10 @@ def misframed_sequences(store: Dict[str, List[Dict[str, Any]]],
         offset, lost_start, lost_end = _placement(sequence, reference)
         if offset is None:
             messages.append(
-                f"{name}: the sequence could not be placed against MalAvi's reading frame "
-                f"at all. It may not be avian haemosporidian cytochrome b, or it may be "
-                f"reverse-complemented. A curator has to look at it.")
+                f"{name}: the sequence ({len(sequence)} bp) could not be placed against "
+                f"MalAvi's reading frame on the strand submitted, at any position. It may "
+                f"not be avian haemosporidian cytochrome b, or it may be the reverse "
+                f"complement, which the screening report says. A curator has to look at it.")
         elif lost_start or lost_end:
             lost = " and ".join(
                 part for part in (
@@ -1100,13 +1142,15 @@ def misframed_sequences(store: Dict[str, List[Dict[str, Any]]],
             # anyone can act on, so describe the overhang instead.
             where = (f"placed at frame position {offset + 1}" if offset >= 0
                      else f"starting {-offset} base(s) before the window begins")
+            first, last = sequence_check.window_span(offset, len(sequence), MALAVI_WINDOW)
             messages.append(
                 f"{name}: {len(sequence)} bp {where} does not fit the {MALAVI_WINDOW} bp "
-                f"barcode window -- storing it would discard {lost}. A partial sequence is "
-                f"fine and is padded into the window; this one is mis-trimmed or is a "
-                f"longer amplicon. Either the submitter re-windows it, or a curator decides "
-                f"the shift is an indel and asks for the sequence to be re-read; the "
-                f"screening report shows both readings.")
+                f"barcode window -- storing it would discard {lost}. The window is "
+                f"positions {first}-{last} of the sequence. A partial sequence is fine and "
+                f"is padded into the window; this one is mis-trimmed or is a longer "
+                f"sequence. Either the submitter deposits the window, or a curator files a "
+                f"correction replacing the sequence with positions {first}-{last}; the "
+                f"screening report shows the window.")
     return messages
 
 

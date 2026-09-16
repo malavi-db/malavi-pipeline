@@ -17,6 +17,7 @@ from the same definition. The derived Table of Lineage Names lives there too.
 | `build_reports.R` | `malaviR` | `docs/assets/reports/*.csv` + `docs/assets/data/reports.json` |
 | `build_sequence_index.R` | `malaviR` | `docs/assets/data/lineage_sequences.json` — the sequence checker's index |
 | `build_bird_names.R` | `malaviR` (clootl snapshot) | `docs/assets/data/bird_names.json` — the checklist the name checker validates host names against |
+| `build_site_points.R` | `malaviR` | `docs/assets/data/site_points.json` — every sampling site with readable coordinates and its records, for the map page |
 
 Each accepts `--dry-run`, which loads config + malaviR and prints the plan without writing.
 
@@ -31,10 +32,11 @@ Rscript export/build_tables_json.R      # the browsable tables
 Rscript export/build_downloads.R        # the download files
 Rscript export/build_reports.R          # the QC reports
 Rscript export/build_sequence_index.R   # the checker's lineage index
+Rscript export/build_site_points.R      # the map page's sampling sites
 ```
 
 `build_bird_names.R` was missing from this list until 2026-08-14, and `build_downloads.R`
-was missing from RUNBOOK §6. Six scripts, one list; RUNBOOK §6 is the same six.
+was missing from RUNBOOK §6. Seven scripts since 2026-09-15 (`build_site_points.R`), one list; RUNBOOK §6 is the same seven.
 
 Re-run **all** of them after bumping `malaviR.release` in `config/project.yml`, then
 publish with `publish/push_site.sh`. `build_site_stats.R` and `build_tables_json.R` in

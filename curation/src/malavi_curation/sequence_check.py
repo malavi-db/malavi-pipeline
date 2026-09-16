@@ -171,6 +171,10 @@ class SequenceCheck:
     verdict: str = "unchecked"
     flags: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    # 1-based positions of the submitted sequence that the window covers; set once the
+    # sequence is placed. For a barcode this is (1, length); for a longer sequence it
+    # says where the barcode was found.
+    window: Optional[Tuple[int, int]] = None
 
     def as_dict(self) -> dict:
         d = {
@@ -190,6 +194,7 @@ class SequenceCheck:
             # figure must use the same placement the distances above were computed from,
             # or it would illustrate a different comparison than the one reported.
             "registered": self.registered,
+            "window": list(self.window) if self.window else None,
         }
         return d
 
@@ -233,6 +238,91 @@ def _register(query: str, ref: Reference,
     if frac > MAX_ACCEPTABLE_MISMATCH:
         return None, frac
     return off, frac
+
+
+_COMPLEMENT = str.maketrans("ACGTRYSWKMBDHVN", "TGCAYRSWMKVHDBN")
+
+
+def reverse_complement(seq: str) -> str:
+    """The reverse complement, IUPAC codes included; gaps are kept as they are."""
+    return seq.translate(_COMPLEMENT)[::-1]
+
+
+# The locator's seeds: consensus k-mers of this length, one every ``SEED_STEP``
+# positions, looked up in the query. Twelve bases is long enough that a chance hit in a
+# few thousand bases is rare, short enough that a divergent lineage still shares most
+# of them with the consensus.
+SEED_LENGTH = 12
+SEED_STEP = 6
+
+
+def _score_offset(query: str, ref: Reference, off: int) -> Tuple[int, int]:
+    """(mismatches, comparable) for the query placed at frame offset ``off``."""
+    mm = tot = 0
+    start = max(0, -off)
+    stop = min(len(query), ref.width - off)
+    consensus = ref.consensus
+    for i in range(start, stop):
+        ch = query[i]
+        cj = consensus[i + off]
+        if ch in BASES and cj in BASES:
+            tot += 1
+            mm += ch != cj
+    return mm, tot
+
+
+def locate(query: str, ref: Reference
+           ) -> Tuple[Optional[str], Optional[int], Optional[float], bool]:
+    """Find the barcode window anywhere in a sequence of any length, either strand.
+
+    Returns ``(oriented query, offset, mismatch fraction, reversed)``; the first three
+    are ``None`` when nothing convincing is found. ``offset`` has the meaning
+    :func:`_register` gives it (query position 1 sits at frame position offset+1), so
+    a query that carries the window somewhere inside it gets a negative offset and
+    :func:`_place` cuts the window out.
+
+    :func:`_register` slides only a few bases either way, which suits a submitted
+    barcode. A mitochondrial genome (the Lis Vieira submission's CARCRI03, 5,756 bp)
+    or a longer amplicon holds the window thousands of bases in, and used to come back
+    "unplaceable, may not be cytochrome b". This seeds the search instead: consensus
+    k-mers are looked up in the query, every offset they vote for is scored the same
+    way :func:`_register` scores, and the best of both orientations wins if it clears
+    the same mismatch ceiling.
+    """
+    best: Tuple[float, int, str, bool] = (2.0, 0, "", False)
+    seeds = [(pos, ref.consensus[pos:pos + SEED_LENGTH])
+             for pos in range(0, ref.width - SEED_LENGTH + 1, SEED_STEP)
+             if all(ch in BASES for ch in ref.consensus[pos:pos + SEED_LENGTH])]
+    for reversed_, oriented in ((False, query), (True, reverse_complement(query))):
+        votes: Counter = Counter()
+        for pos, kmer in seeds:
+            at = oriented.find(kmer)
+            while at >= 0:
+                votes[pos - at] += 1
+                at = oriented.find(kmer, at + 1)
+        # Score the offsets with the most votes, and each one's neighbors, so that a
+        # single indel next to a seed does not hide the true placement.
+        candidates: set = set()
+        for off, _n in votes.most_common(8):
+            candidates.update((off - 1, off, off + 1))
+        for off in candidates:
+            mm, tot = _score_offset(oriented, ref, off)
+            if tot < min(200, max(1, len(oriented) // 2)):
+                continue
+            frac = mm / tot
+            if frac < best[0]:
+                best = (frac, off, oriented, reversed_)
+    frac, off, oriented, reversed_ = best
+    if not oriented or frac > MAX_ACCEPTABLE_MISMATCH:
+        return None, None, (None if not oriented else frac), False
+    return oriented, off, frac, reversed_
+
+
+def window_span(offset: int, length: int, width: int) -> Tuple[int, int]:
+    """1-based positions of the query that fall inside the window at ``offset``."""
+    first = (-offset if offset < 0 else 0) + 1
+    last = min(length, width - max(offset, 0) + (first - 1))
+    return first, last
 
 
 def _place(query: str, offset: int, width: int) -> str:
@@ -316,19 +406,44 @@ def check_sequence(sequence: str, ref: Reference, label: str = "query",
         res.flags.append("non_iupac_characters")
         res.notes.append("unexpected characters: " + ", ".join(sorted(stray)))
 
-    offset, frac = _register(q, ref)
+    longer_than_window = len(q) > ref.width + MAX_OFFSET
+    reversed_ = False
+    offset, frac = (None, None) if longer_than_window else _register(q, ref)
+    if offset is None:
+        # Not where a submitted barcode sits. Look for the window anywhere, on either
+        # strand, before concluding that this is not cytochrome b at all.
+        oriented, offset, frac, reversed_ = locate(q, ref)
+        if oriented is not None:
+            q = oriented
     res.mismatch_fraction = frac
     if offset is None:
         res.verdict = "unplaceable"
         res.flags.append("could_not_register_to_reference_frame")
         res.notes.append(
-            "No offset placed this sequence convincingly against the reference. "
-            "It may not be a haemosporidian cytochrome b barcode, may be reverse "
-            "complemented, or may carry indels.")
+            f"No placement of this {len(q)} bp sequence, on either strand and at any "
+            f"position, agrees with the MalAvi cytochrome b reference closely enough "
+            f"(the best had {frac:.0%} mismatch)" if frac is not None else
+            f"No placement of this {len(q)} bp sequence, on either strand and at any "
+            f"position, overlaps the MalAvi cytochrome b reference enough to judge")
+        res.notes[-1] += ". It may not be a haemosporidian cytochrome b sequence."
         return res
 
     res.offset = offset
     placed = _place(q, offset, ref.width)
+    if reversed_:
+        res.flags.append("reverse_complemented")
+        res.notes.append("The sequence was submitted as the reverse complement; it was "
+                         "reverse-complemented before checking.")
+    first, last = window_span(offset, len(q), ref.width)
+    if longer_than_window or len(q) > ref.width:
+        res.flags.append("longer_than_window")
+        res.notes.append(
+            f"{res.raw_length} bp submitted; the {ref.width} bp MalAvi barcode window is "
+            f"positions {first}-{last} of the sequence"
+            + (" after reverse-complementing" if reversed_ else "") +
+            ". Every check below was run on that window, and it is the window, not the "
+            "whole sequence, that a lineage name refers to.")
+    res.window = (first, last)
     res.registered = placed
     res.n_stop_codons = count_stops(placed.replace("-", "N"))
 
@@ -350,7 +465,9 @@ def check_sequence(sequence: str, ref: Reference, label: str = "query",
     # distinction matters: a real shift enters the alignment wrong and produces a
     # cascade of downstream QC warnings that look like biology and are not.
     canonical = (offset, len(q)) in CANONICAL_SHAPES
-    if offset != 0 and not canonical:
+    if "longer_than_window" in res.flags:
+        pass    # the window note above already says where the barcode sits
+    elif offset != 0 and not canonical:
         res.flags.append("needs_reframing")
         if offset > 0:
             res.notes.append(
@@ -372,7 +489,7 @@ def check_sequence(sequence: str, ref: Reference, label: str = "query",
             f"of a correctly trimmed {_assay_of(offset, len(q))} amplicon. Position 1 "
             f"sits under the primer and is not the template's own base.")
 
-    if len(q) != ref.width and not canonical:
+    if len(q) != ref.width and not canonical and "longer_than_window" not in res.flags:
         res.flags.append("length_differs_from_reference")
         res.notes.append(f"{len(q)} bp submitted against a {ref.width} bp reference frame.")
     if res.n_stop_codons:
