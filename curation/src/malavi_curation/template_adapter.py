@@ -31,7 +31,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
 from .normalize import (
-    accession_list, clean_count, clean_genus, lineage_name, record_change,
+    accession_list, clean_count, clean_genus, lineage_name, parasite_binomial,
+    record_change,
     sequence_pair, source_ref, text,
 )
 
@@ -46,6 +47,9 @@ SHEET_HOSTS = "Hosts_and_Sites"
 SHEET_SITES = "Sites"
 SHEET_ALT_NAMES = "Alt_Lineage_names"
 SHEET_VECTORS = "Vectors"
+# Added in template version 2026-09. Absent from every earlier workbook, which is fine:
+# a missing sheet reads as "no morphospecies links", exactly as an empty one does.
+SHEET_MORPHO = "MorphoSpecies"
 
 # The gray italic worked example that ships on each sheet, identified by the leading cells
 # of its own row. The READ ME tells submitters they may leave it in place, so it must never
@@ -69,6 +73,7 @@ EXAMPLE_ROW_SIGNATURES = {
     # what make the row the example rather than somebody's data.
     SHEET_ALT_NAMES: ("SGS1", "P15"),
     SHEET_VECTORS: ("GRW04", "Culex pipiens"),
+    SHEET_MORPHO: ("SGS1", "Plasmodium relictum"),
 }
 
 
@@ -114,6 +119,7 @@ CANONICAL_HEADERS = {
     SHEET_VECTORS: ["LINEAGE_NAME", "VectorSpecies", "VECTOR_METHOD", "Country",
                     "CountryRegion", "SiteName", "No_found", "No_tested", "Reference",
                     "Comment"],
+    SHEET_MORPHO: ["LINEAGE_NAME", "MorphoSpecies", "Reference", "Comment"],
 }
 
 # Sheets whose presence means "this workbook is a filled template". A submission often
@@ -289,6 +295,9 @@ def build_submission_from_workbook(
     # the genus for a newly proposed lineage is stated.
     proposed: List[Dict[str, Any]] = []
     genus_by_lineage: Dict[str, str] = {}
+    # Lineage -> described species links, from the MorphoSpecies sheet and from binomials
+    # typed in the ParasiteGenus column. Filled by both loops below.
+    morphospecies: List[Dict[str, Any]] = []
     worksheet = sheet(SHEET_NEWLINEAGES)
     if worksheet is not None:
         header, body = sheet_rows(worksheet, "LINEAGE_NAME", repairs)
@@ -300,9 +309,28 @@ def build_submission_from_workbook(
             where = source_ref(sheet=SHEET_NEWLINEAGES, row=row_number,
                                file=workbook_name)
             record_change(changes, "lineage_name", submitted_name, name, where)
-            genus = clean_genus(cell(header, row, "ParasiteGenus"))
+            genus_cell = cell(header, row, "ParasiteGenus")
+            genus = clean_genus(genus_cell)
             if genus:
                 genus_by_lineage[name] = genus
+            # A species name typed where the genus was asked for is read apart: the genus
+            # goes into parasite_genus, and the species name becomes a proposed
+            # morphospecies link, kept with the row it came from. Both halves are said
+            # -- the split is recorded as a normalization, and the link says where it
+            # came from -- because until 2026-09-23 the species half was silently lost.
+            binomial = parasite_binomial(genus_cell)
+            if binomial or (genus_cell and genus != (genus_cell or "").strip()):
+                record_change(changes, "parasite_genus", genus_cell, genus, where)
+            if binomial:
+                morphospecies.append({
+                    "lineage_name": name,
+                    "morphospecies": binomial[1],
+                    "genus": binomial[0],
+                    "reference": text(cell(header, row, "Reference")),
+                    "comment": None,
+                    "origin": "ParasiteGenus",
+                    "source": where,
+                })
             proposed.append({
                 "lineage_name": name,
                 "parasite_genus": genus,
@@ -474,8 +502,43 @@ def build_submission_from_workbook(
                 "malavi_name": malavi_name,
                 "alternative_name": alternative,
                 "accessions": accessions,
+                # Carried since 2026-09-23. The reference is what the ingest writes as
+                # the row's REFERENCE_NAME, and the comment is where a submitter explains
+                # a row that otherwise makes no sense (one lineage, three deposits).
+                "reference": text(cell(header, row, "Reference")),
+                "comment": text(cell(header, row, "Comment")),
                 "source": source_ref(sheet=SHEET_ALT_NAMES, row=row_number,
                                      file=workbook_name),
+            })
+
+    # ---- morphospecies links ----------------------------------------------------------
+    # Template 2026-09 added this sheet after a 2026-09-02 submission put
+    # three species descriptions in record comments and two in the genus column because
+    # there was nowhere else to put them. A row here is a claim that the study links a
+    # lineage to a described species -- the content of MalAvi's morpho_species table --
+    # and it is carried to the curator report and the ingest rather than being lost.
+    worksheet = sheet(SHEET_MORPHO)
+    if worksheet is not None:
+        header, body = sheet_rows(worksheet, "LINEAGE_NAME", repairs)
+        for row_number, row in body:
+            submitted_name = cell(header, row, "LINEAGE_NAME")
+            name = lineage_name(submitted_name)
+            species_cell = text(cell(header, row, "MorphoSpecies"))
+            if not name and not species_cell:
+                continue
+            where = source_ref(sheet=SHEET_MORPHO, row=row_number, file=workbook_name)
+            record_change(changes, "lineage_name", submitted_name, name, where)
+            binomial = parasite_binomial(species_cell)
+            morphospecies.append({
+                "lineage_name": name,
+                # As typed when it cannot be read as "<Genus> <epithet>": the check
+                # reports it, and a curator sees exactly what was written.
+                "morphospecies": binomial[1] if binomial else species_cell,
+                "genus": binomial[0] if binomial else clean_genus(species_cell),
+                "reference": text(cell(header, row, "Reference")),
+                "comment": text(cell(header, row, "Comment")),
+                "origin": "MorphoSpecies",
+                "source": where,
             })
 
     submission: Dict[str, Any] = {
@@ -492,6 +555,7 @@ def build_submission_from_workbook(
         # submitter saying "the lineage you call SGS1 is the one I published as P15" is
         # making a claim about MalAvi's own data, and no curator was ever shown it.
         "alternative_names": alternative_names,
+        "morphospecies": morphospecies,
         "provenance": {
             "source": "template",
             "tool_version": __version__,

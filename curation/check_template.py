@@ -41,7 +41,8 @@ from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from malavi_curation.config import load_config, repo_root          # noqa: E402
-from malavi_curation.sequence_check import (                       # noqa: E402
+from malavi_curation.sequence_check import (
+    MIN_COMPARABLE_TO_RANK,                       # noqa: E402
     Reference, check_sequence, clean, default_alignment_path,
 )
 
@@ -61,11 +62,22 @@ from malavi_curation.report_html import (                          # noqa: E402
     render_paper_only_report, render_report, write_pdf, write_report,
 )
 from malavi_curation.template_adapter import (                     # noqa: E402
-    SHEET_HOSTS, SHEET_NEWLINEAGES, SHEET_REFERENCE, SHEET_SEQUENCES,
+    SHEET_HOSTS, SHEET_MORPHO, SHEET_NEWLINEAGES, SHEET_REFERENCE, SHEET_SEQUENCES,
     build_submission_from_path, cell as _cell, sheet_rows,
 )
 
 ACCESSION_RE = re.compile(r"^[A-Z]{1,2}[0-9]{5,6}(\.[0-9]+)?$")
+
+# Words in a record comment that mean the submitter is telling us about morphology --
+# a species description, an identification -- which MalAvi stores in morpho_species and
+# the template, before version 2026-09, had no sheet for. a 2026-09-02 submission
+# carried three such comments ("linking this lineage to morphological
+# information through the description of the new species Leucocytozoon cariamae").
+# This is a keyword flag, not an extraction: the report quotes the comment and points at
+# the MorphoSpecies sheet, and a curator decides. Nothing is read out of the prose.
+MORPHOLOGY_WORDS = re.compile(
+    r"morpholog|new species|\bn\.\s?sp\b|sp\.\s?nov|morphospecies|described as",
+    re.IGNORECASE)
 
 
 def _header_and_body(ws, key_header: str) -> Tuple[List[str], List[tuple]]:
@@ -157,7 +169,8 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set],
             "reason": "the malaviR database snapshot has not been generated "
                       "(run curation/r/gate_reference.R)"})
 
-    def issue(sev: str, code: str, msg: str, subject: str = None):
+    def issue(sev: str, code: str, msg: str, subject: str = None,
+              evidence: Optional[dict] = None):
         """Record one issue.
 
         ``code`` is a stable identifier for *which* check raised this, so the
@@ -171,6 +184,10 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set],
         entry = {"severity": sev, "code": code, "message": msg}
         if subject:
             entry["subject"] = subject
+        # Structured material the report renders as a table rather than as a sentence --
+        # a quoted comment and its row, say. Carried through checks.Finding.evidence.
+        if evidence:
+            entry["evidence"] = evidence
         out["issues"].append(entry)
 
     # ---- declared new lineages ------------------------------------------
@@ -182,7 +199,24 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set],
             if not name:
                 continue
             accs = [a.strip() for a in re.split(r"[,;\s]+", _cell(hdr, r, "GENBANK_NR") or "") if a.strip()]
-            declared[name] = {"genus": _cell(hdr, r, "ParasiteGenus"), "accessions": accs}
+            genus_cell = _cell(hdr, r, "ParasiteGenus")
+            declared[name] = {"genus": genus_cell, "accessions": accs}
+            # The genus column holds exactly three values in MalAvi. A species name typed
+            # there is read apart (the adapter does the same): genus to the genus column,
+            # species name to a proposed morphospecies link. Anything else unrecognized is
+            # left for a curator rather than written into a three-valued column.
+            binomial = normalize.parasite_binomial(genus_cell)
+            if binomial:
+                issue("info", "parasite_genus_carries_species",
+                      f"{name}: ParasiteGenus was typed as {genus_cell!r}. The genus is "
+                      f"read as {binomial[0]}, and {binomial[1]!r} is recorded as a "
+                      f"proposed morphospecies link for {name} (see the Morphospecies "
+                      f"section) rather than written into the genus column.", name)
+            elif genus_cell and not normalize.clean_genus(genus_cell):
+                issue("warn", "parasite_genus_unrecognized",
+                      f"{name}: ParasiteGenus {genus_cell!r} is not Plasmodium, "
+                      f"Haemoproteus or Leucocytozoon; the genus is left blank for a "
+                      f"curator to fill in.", name)
             # A name that does not follow from its host is a typo until shown otherwise.
             # Nothing else looks at the SHAPE of a proposed name: an invented acronym is
             # not in the release, so the collision check passes it, and the name goes into
@@ -268,6 +302,44 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set],
                   f"{name}: {res.notes[-1] if res.notes else 'could not be placed against the reference alignment.'}",
                   name)
 
+    # ---- the submitted sequences against EACH OTHER ---------------------
+    # Every check above compares a sequence with MalAvi. None compared it with the other
+    # sequences in the same workbook, so MALAVI-SUB-2026-000008 proposed COCCOC06 and
+    # COCCOC08 for two sequences identical over all 479 positions and the screen said
+    # "new" to both (found 2026-09-24). Two names for one sequence is exactly what MalAvi
+    # must never hold -- a lineage is defined by differing at one or more positions -- and
+    # the ingest would have written both. Compared on the registered (window-aligned)
+    # sequence where there is one, over the positions both have a definite base, with the
+    # same coverage floor an identity call against the release needs.
+    registered = {}
+    for entry in out["sequences"]:
+        seq = str(entry.get("registered") or entry.get("sequence") or "").upper()
+        if entry.get("label") and seq:
+            registered[entry["label"]] = seq
+    labels = list(registered)
+    # Recorded on the screen as well as raised, so the summary at the top of the report
+    # can mark both names in red the way it marks a taken name: a curator should meet
+    # this on page one, not find it among the cards.
+    out["identical_pairs"] = []
+    for i, first in enumerate(labels):
+        for second in labels[i + 1:]:
+            a, b = registered[first], registered[second]
+            comparable = mismatches = 0
+            for x, y in zip(a, b):
+                if x in "ACGT" and y in "ACGT":
+                    comparable += 1
+                    mismatches += x != y
+            if comparable >= MIN_COMPARABLE_TO_RANK and mismatches == 0:
+                out["identical_pairs"].append([first, second, comparable])
+                # Blocking, not a warning: two names for one sequence cannot be ingested
+                # in any form, so there is no curator judgment to defer to -- one of the
+                # names has to go before anything else about this submission matters.
+                issue("error", "sequences_identical_within_submission",
+                      f"{first} and {second} are IDENTICAL over all {comparable} positions "
+                      f"both cover: one sequence proposed under two names. One name has to "
+                      f"be withdrawn and its birds recorded under the other.", first,
+                      evidence={"pair": [first, second], "comparable": comparable})
+
     # ---- cross-sheet agreement ------------------------------------------
     for name in declared:
         if name not in seqs:
@@ -301,6 +373,62 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set],
                 issue("warn", "lineage_without_host_record",
                       f"{name} is a new lineage with no row in {SHEET_HOSTS}.", name)
 
+    # ---- morphospecies links --------------------------------------------
+    # Template 2026-09. Each row says "this study links lineage X to described species
+    # Y", which is MalAvi's morpho_species table. Two things can be wrong with a row: the
+    # lineage is neither one MalAvi holds nor one this submission declares, or the species
+    # is not written as "<Genus> <epithet>" with a MalAvi parasite genus.
+    morpho_links: List[dict] = []
+    if SHEET_MORPHO in wb.sheetnames:
+        hdr, body = _header_and_body(wb[SHEET_MORPHO], "LINEAGE_NAME")
+        for r in body:
+            name = _lineage_cell(hdr, r)
+            species = (_cell(hdr, r, "MorphoSpecies") or "").strip()
+            if not name and not species:
+                continue
+            morpho_links.append({"lineage": name, "morphospecies": species,
+                                 "reference": _cell(hdr, r, "Reference")})
+            if not name:
+                issue("warn", "morphospecies_lineage_unknown",
+                      f"MorphoSpecies row for {species!r} names no lineage.", species)
+            elif (name not in declared and known_lineages is not None
+                  and name not in known_lineages):
+                issue("warn", "morphospecies_lineage_unknown",
+                      f"{name}: the MorphoSpecies sheet links it to {species!r}, but "
+                      f"{name} is neither a lineage MalAvi holds nor one this submission "
+                      f"declares on {SHEET_NEWLINEAGES}.", name)
+            if not normalize.parasite_binomial(species):
+                issue("warn", "morphospecies_binomial_malformed",
+                      f"{name or species}: {species!r} is not written as '<Genus> "
+                      f"<epithet>' with a MalAvi parasite genus (Plasmodium, "
+                      f"Haemoproteus or Leucocytozoon), so it cannot be filed as a "
+                      f"morphospecies as typed.", name or species)
+    out["morphospecies"] = morpho_links
+
+    # A record comment that talks about morphology is information MalAvi has a table for
+    # and this submission has not put there. Said once per lineage, and not at all for a
+    # lineage that already has a MorphoSpecies row, because then the sheet was used.
+    if SHEET_HOSTS in wb.sheetnames:
+        linked = {link["lineage"] for link in morpho_links if link["lineage"]}
+        hdr, body_with_rows = sheet_rows(wb[SHEET_HOSTS], "LINEAGE_NAME")
+        mentioned = set()
+        for row_number, r in body_with_rows:
+            name = _lineage_cell(hdr, r)
+            comment = (_cell(hdr, r, "COMMENT") or "").strip()
+            if not name or not comment or name in linked or name in mentioned:
+                continue
+            if MORPHOLOGY_WORDS.search(comment):
+                mentioned.add(name)
+                # The message is one plain fact. The comment itself travels as evidence
+                # and the report prints it verbatim in a table -- the earlier version put
+                # the quotation and an explanation into the sentence, which read like a
+                # summary somebody had written rather than the submitter's own words.
+                issue("info", "comment_mentions_morphology",
+                      f"{name}: a record comment mentions morphology and {name} has no "
+                      f"MorphoSpecies row.", name,
+                      evidence={"comment": comment, "row": row_number,
+                                "sheet": SHEET_HOSTS})
+
     if SHEET_REFERENCE in wb.sheetnames:
         hdr, body = _header_and_body(wb[SHEET_REFERENCE], "REFERENCE_NAME")
         names = [_cell(hdr, r, "REFERENCE_NAME") for r in body]
@@ -316,16 +444,39 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set],
                   "study is not published yet, name it '<Authors> unpubl' (for example "
                   "'Barrow et al unpubl') and leave the year, journal and pages blank.")
         # The unpublished marker has to be spelled MalAvi's way or a curator filtering
-        # unpublished records will quietly miss this study. Warning, not blocking: the
-        # name is a curator's to settle, and a misspelling is fixed in a correction
-        # rather than by sending the whole submission back.
+        # unpublished records will quietly miss this study. Since 2026-09-23 the
+        # recognizable variants ("unpub", "unpublished", "et. al., unpublished") are
+        # respelled automatically at ingest, so they are reported as information: what
+        # will be stored. Only a name the normalizer cannot read stays a warning, and
+        # even that is not blocking: the name is a curator's to settle in a correction.
         for name in names:
+            if not name:
+                continue
             problem = reference_names.problem_with(name)
             if problem:
                 issue("warn", "reference_unpubl_malformed", problem, name)
+                continue
+            # Neither shape at all: two full author names (an emailed workbook,
+            # 2026-09-17) has no year and no marker, and every earlier check let it
+            # through because each only judges names of its own kind. It cannot be filed.
+            if (not reference_names.is_unpublished(name)
+                    and not reference_names.looks_like_citation_key(name)):
+                issue("warn", "reference_name_unrecognized",
+                      f"{name!r} is neither '<Authors> <year>' nor '<Authors> unpubl', so "
+                      f"MalAvi has no way to file records under it. For a study not yet "
+                      f"published, the name is the authors followed by 'unpubl' -- for "
+                      f"example 'Smith & Jones unpubl'.", name)
+                continue
+            if reference_names.is_unpublished(name):
+                form = reference_names.canonical(name)
+                if form != name.strip():
+                    issue("info", "reference_unpubl_form",
+                          f"{name!r} will be filed as {form!r}, the way MalAvi names an "
+                          f"unpublished study.", name)
         # A published citation key spelled any way but MalAvi's is a second study to
-        # every consumer that joins on the name. Warn, name the spelling that will be
-        # stored, and say whether MalAvi already holds the study under it.
+        # every consumer that joins on the name. The ingest respells it, so this is
+        # information: name the spelling that will be stored, and say whether MalAvi
+        # already holds the study under it.
         held = _reference_names_in_store()
         for name in names:
             if not name:
@@ -336,7 +487,7 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set],
                 if form in held:
                     problem += (f" MalAvi already holds {form!r}: these records will file "
                                 f"under that study.")
-                issue("warn", "reference_name_form", problem, name)
+                issue("info", "reference_name_form", problem, name)
             elif form in held and not reference_names.is_unpublished(form):
                 issue("info", "reference_already_in_malavi",
                       f"{form!r} is already a study in MalAvi; these records will be "

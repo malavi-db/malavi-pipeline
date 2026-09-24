@@ -79,6 +79,9 @@ def _workbook(tmp_path, name="ImportMalavi.xlsx", **overrides):
            overrides.get("hosts", [
                ["TUMIG19", "Turdus migratorius", None, None, None, None, None,
                 "Sweden", None, "Lund", 3, 25, "Ellis et al 2026", None]]))
+    if overrides.get("morpho") is not None:       # template 2026-09 only
+        _sheet(workbook, "MorphoSpecies", CANONICAL_HEADERS["MorphoSpecies"],
+               overrides["morpho"])
     path = tmp_path / name
     workbook.save(path)
     return path
@@ -487,6 +490,61 @@ class TestCitationKeyForm:
                                        known_lineages={"SGS1"})
         assert "reference_name_form" not in _codes(report)
 
+    def test_the_respelling_is_information_not_a_warning(self, check_template, reference,
+                                                        tmp_path):
+        """The ingest respells the key itself, so nothing is asked of a curator."""
+        report = check_template.screen(_workbook(
+            tmp_path,
+            reference=[["Vieira et al., 2023", 2023, "A title", "A journal", None, None,
+                        None, None]]),
+            reference, known_lineages={"SGS1"})
+        finding = next(i for i in report["issues"] if i["code"] == "reference_name_form")
+        assert finding["severity"] == "info"
+        assert "will be filed as 'Vieira et al 2023'" in finding["message"]
+
+
+class TestUnpublishedReferenceForm:
+    """2026-09-23: 'Ellis et. al., unpublished' arrived in a real submission. It is
+    recognizably an unpublished study, so the ingest respells it and the screen says so,
+    rather than warning a curator to retype it."""
+
+    def test_a_respellable_variant_is_information(self, check_template, reference,
+                                                  tmp_path):
+        report = check_template.screen(_workbook(
+            tmp_path,
+            reference=[["Ellis et. al., unpublished", None, "A title", None, None,
+                        None, None, None]],
+            new_lineages=[["TUMIG19", None, "Haemoproteus", "Turdus migratorius", None,
+                           "Ellis et. al., unpublished", None]],
+            hosts=[["TUMIG19", "Turdus migratorius", None, None, None, None, None,
+                    "Sweden", None, "Lund", 3, 25, "Ellis et. al., unpublished",
+                    None]]),
+            reference, known_lineages={"SGS1"})
+        assert "reference_unpubl_malformed" not in _codes(report)
+        finding = next(i for i in report["issues"]
+                       if i["code"] == "reference_unpubl_form")
+        assert finding["severity"] == "info"
+        assert "'Ellis et al unpubl'" in finding["message"]
+
+    def test_a_name_the_normalizer_cannot_read_is_still_a_warning(
+            self, check_template, reference, tmp_path):
+        report = check_template.screen(_workbook(
+            tmp_path,
+            reference=[["Unpubl data from Barrow", None, "A title", None, None, None,
+                        None, None]]),
+            reference, known_lineages={"SGS1"})
+        assert "reference_unpubl_malformed" in _codes(report)
+        assert "reference_unpubl_form" not in _codes(report)
+
+    def test_a_correct_name_raises_nothing(self, check_template, reference, tmp_path):
+        report = check_template.screen(_workbook(
+            tmp_path,
+            reference=[["Barrow et al unpubl", None, "A title", None, None, None,
+                        None, None]]),
+            reference, known_lineages={"SGS1"})
+        assert "reference_unpubl_form" not in _codes(report)
+        assert "reference_unpubl_malformed" not in _codes(report)
+
 
 def test_use_windows_hands_the_located_window_to_the_r_checks(check_template):
     submission = {"sequences": [
@@ -501,3 +559,153 @@ def test_use_windows_hands_the_located_window_to_the_r_checks(check_template):
     assert submission["sequences"][0]["sequence_window"] == [3754, 4232]
     assert submission["sequences"][0]["sequence"] == "x" * 5756
     assert submission["sequences"][1]["sequence_clean"] == "C" * 479
+
+
+class TestMorphospecies:
+    """2026-09-23: the genus column and the MorphoSpecies sheet (template 2026-09)."""
+
+    def test_a_species_in_the_genus_column_is_information_naming_both_halves(
+            self, check_template, reference, tmp_path):
+        report = check_template.screen(_workbook(
+            tmp_path,
+            new_lineages=[["TUMIG19", "MK493368", "Plasmodium huffi", "Turdus migratorius",
+                           None, "Ellis et al 2026", None]]),
+            reference, known_lineages={"SGS1"})
+        finding = next(i for i in report["issues"]
+                       if i["code"] == "parasite_genus_carries_species")
+        assert finding["severity"] == "info"
+        assert "Plasmodium" in finding["message"] and "'Plasmodium huffi'" in finding["message"]
+        assert "parasite_genus_unrecognized" not in _codes(report)
+
+    def test_an_unknown_genus_is_a_warning(self, check_template, reference, tmp_path):
+        report = check_template.screen(_workbook(
+            tmp_path,
+            new_lineages=[["TUMIG19", "MK493368", "Trypanosoma", "Turdus migratorius",
+                           None, "Ellis et al 2026", None]]),
+            reference, known_lineages={"SGS1"})
+        assert "parasite_genus_unrecognized" in _codes(report)
+
+    def test_a_good_morphospecies_row_raises_nothing(self, check_template, reference,
+                                                     tmp_path):
+        report = check_template.screen(_workbook(
+            tmp_path, morpho=[["SGS1", "Plasmodium homocircumflexum", "Ellis et al 2026", None],
+                              ["TUMIG19", "Haemoproteus minutus", "Ellis et al 2026", None]]),
+            reference, known_lineages={"SGS1"})
+        codes = _codes(report)
+        assert "morphospecies_lineage_unknown" not in codes
+        assert "morphospecies_binomial_malformed" not in codes
+        assert [m["lineage"] for m in report["morphospecies"]] == ["SGS1", "TUMIG19"]
+
+    def test_a_link_to_a_lineage_nobody_has_is_a_warning(self, check_template, reference,
+                                                         tmp_path):
+        report = check_template.screen(_workbook(
+            tmp_path, morpho=[["NOSUCH01", "Plasmodium homocircumflexum", "Ellis et al 2026", None]]),
+            reference, known_lineages={"SGS1"})
+        finding = next(i for i in report["issues"]
+                       if i["code"] == "morphospecies_lineage_unknown")
+        assert finding["subject"] == "NOSUCH01"
+
+    def test_a_non_binomial_species_is_a_warning(self, check_template, reference, tmp_path):
+        report = check_template.screen(_workbook(
+            tmp_path, morpho=[["SGS1", "Plasmodium sp. nov.", "Ellis et al 2026", None]]),
+            reference, known_lineages={"SGS1"})
+        assert "morphospecies_binomial_malformed" in _codes(report)
+
+    def test_a_comment_about_morphology_is_pointed_at_the_sheet(self, check_template,
+                                                                reference, tmp_path):
+        """A 2026-09 submission's comments, in shape: the flag quotes them and asks nothing else."""
+        comment = ("Although CARCRI01 lineage has already been deposited, this study "
+                   "contributes by linking this lineage to morphological information "
+                   "through the description of the new species Leucocytozoon cariamae")
+        report = check_template.screen(_workbook(
+            tmp_path,
+            hosts=[["CARCRI01", "Cariama cristata", None, None, None, None, None,
+                    "Brazil", None, "Lund", 1, 1, "Ellis et al 2026", comment],
+                   ["CARCRI01", "Cariama cristata", None, None, None, None, None,
+                    "Brazil", None, "Lund", 1, 1, "Ellis et al 2026", comment],
+                   ["TUMIG19", "Turdus migratorius", None, None, None, None, None,
+                    "Sweden", None, "Lund", 3, 25, "Ellis et al 2026", "1 mixed infection"]]),
+            reference, known_lineages={"SGS1", "CARCRI01"})
+        findings = [i for i in report["issues"] if i["code"] == "comment_mentions_morphology"]
+        assert len(findings) == 1, "once per lineage, not once per row"
+        assert findings[0]["subject"] == "CARCRI01"
+        assert findings[0]["severity"] == "info"
+        # The comment travels verbatim as evidence, with its row; the message is one fact.
+        assert findings[0]["evidence"]["comment"] == comment
+        assert findings[0]["evidence"]["row"] == 3
+        assert comment not in findings[0]["message"]
+
+    def test_a_lineage_with_a_morphospecies_row_is_not_nagged_about_its_comment(
+            self, check_template, reference, tmp_path):
+        comment = "new species Leucocytozoon cariamae described here"
+        report = check_template.screen(_workbook(
+            tmp_path,
+            hosts=[["CARCRI01", "Cariama cristata", None, None, None, None, None,
+                    "Brazil", None, "Lund", 1, 1, "Ellis et al 2026", comment]],
+            morpho=[["CARCRI01", "Leucocytozoon cariamae", "Ellis et al 2026", None]]),
+            reference, known_lineages={"SGS1", "CARCRI01"})
+        assert "comment_mentions_morphology" not in _codes(report)
+
+
+class TestIdenticalWithinSubmission:
+    """2026-09-24: MALAVI-SUB-2026-000008 proposed COCCOC06 and COCCOC08 for one sequence."""
+
+    def test_two_names_for_one_sequence_are_reported_once(self, check_template, reference,
+                                                          tmp_path):
+        seq = ("ATGCATGCTA" * 48)[:479]
+        seq = seq[:100] + ("T" if seq[100] != "T" else "G") + seq[101:]   # not SGS1 itself
+        report = check_template.screen(_workbook(
+            tmp_path,
+            new_lineages=[["TUMIG19", None, "Haemoproteus", "Turdus migratorius", None,
+                           "Ellis et al 2026", None],
+                          ["TUMIG20", None, "Haemoproteus", "Turdus migratorius", None,
+                           "Ellis et al 2026", None]],
+            sequences=[["TUMIG19", seq], ["TUMIG20", seq]]),
+            reference, known_lineages={"SGS1"})
+        findings = [i for i in report["issues"]
+                    if i["code"] == "sequences_identical_within_submission"]
+        assert len(findings) == 1
+        assert "TUMIG19 and TUMIG20" in findings[0]["message"]
+        assert findings[0]["severity"] == "error", "blocking: neither form can be ingested"
+        assert findings[0]["evidence"]["pair"] == ["TUMIG19", "TUMIG20"]
+        assert report["identical_pairs"] == [["TUMIG19", "TUMIG20", 479]]
+
+    def test_sequences_one_base_apart_are_distinct_lineages(self, check_template, reference,
+                                                            tmp_path):
+        seq = ("ATGCATGCTA" * 48)[:479]
+        other = seq[:250] + ("T" if seq[250] != "T" else "G") + seq[251:]
+        report = check_template.screen(_workbook(
+            tmp_path,
+            new_lineages=[["TUMIG19", None, "Haemoproteus", "Turdus migratorius", None,
+                           "Ellis et al 2026", None],
+                          ["TUMIG20", None, "Haemoproteus", "Turdus migratorius", None,
+                           "Ellis et al 2026", None]],
+            sequences=[["TUMIG19", seq], ["TUMIG20", other]]),
+            reference, known_lineages={"NOTSGS1"})
+        assert "sequences_identical_within_submission" not in _codes(report)
+
+
+class TestReferenceNameUnrecognized:
+    """2026-09-24: an emailed workbook named its reference as two full author
+    names -- no year, no 'unpubl' -- and no check said anything."""
+
+    def test_a_name_with_neither_shape_is_a_warning(self, check_template, reference,
+                                                    tmp_path):
+        report = check_template.screen(_workbook(
+            tmp_path,
+            reference=[["Jane Smith, John Jones", 2027, "A title", None, None,
+                        None, None, None]]),
+            reference, known_lineages={"SGS1"})
+        finding = next(i for i in report["issues"]
+                       if i["code"] == "reference_name_unrecognized")
+        assert finding["severity"] == "warn"
+        assert "unpubl" in finding["message"]
+        assert "reference_name_form" not in _codes(report)
+
+    @pytest.mark.parametrize("name", ["Ellis et al 2026", "Vieira et al., 2023",
+                                      "Barrow et al unpubl", "Ellis et. al., unpublished"])
+    def test_both_recognized_shapes_pass(self, check_template, reference, tmp_path, name):
+        report = check_template.screen(_workbook(
+            tmp_path, reference=[[name, 2026, "A title", None, None, None, None, None]]),
+            reference, known_lineages={"SGS1"})
+        assert "reference_name_unrecognized" not in _codes(report)

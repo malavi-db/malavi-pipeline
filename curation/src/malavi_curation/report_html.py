@@ -273,6 +273,7 @@ tr:last-child td { border-bottom:0; }
 tbody tr:hover td { background:var(--surface-2); }
 td.wrapcell { white-space:normal; min-width:280px; }
 td.rowno { color:var(--ink-3); font-variant-numeric:tabular-nums; text-align:right; }
+td.comment { font-size:12px; color:var(--ink-2); max-width:34ch; }
 /* The Ref a curator quotes on the verdict form. Deliberately the most legible cell in
    the row: it is the one value they have to copy by eye without mistyping. */
 td.handle { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight:700;
@@ -656,12 +657,28 @@ def _summary_section(submission: Dict[str, Any], screen: Optional[Any]) -> str:
         tile(len(vectors), "vector record" + ("s" if len(vectors) != 1 else "")),
     ])
 
+    # Names that share one sequence with another name in this same submission. Marked on
+    # page one like a taken name, because it blocks and because a curator who reads only
+    # the first page must not carry away "seven new lineages" when there are six.
+    same_as: Dict[str, str] = {}
+    for report in reports:
+        for pair in report.get("identical_pairs") or []:
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                same_as.setdefault(str(pair[0]), str(pair[1]))
+                same_as.setdefault(str(pair[1]), str(pair[0]))
+
     lines = []
     if proposed:
         parts = []
         for entry in proposed:
             name = str(entry.get("lineage_name") or "")
-            if name in not_new:
+            if name in same_as:
+                parts.append(
+                    f'<span class="taken-name">{esc(name)}</span>'
+                    f'<span class="taken-note"> (<b>Same sequence as {esc(same_as[name])}'
+                    f'</b> &mdash; one lineage proposed under two names. One of the two '
+                    f'must be withdrawn before this submission can go in.)</span>')
+            elif name in not_new:
                 match = not_new.get(name) or "a lineage MalAvi already has"
                 parts.append(
                     f'<span class="taken-name">{esc(name)}</span>'
@@ -872,7 +889,7 @@ CHECK_GROUPS = (
     ("Sequences", (
         "sequence_is_known_lineage", "sequence_identity_unresolved", "sequence_qc",
         "sequence_needs_reframing", "sequence_stop_codon", "sequence_unplaceable",
-        "sequence_longer_than_window")),
+        "sequence_longer_than_window", "sequences_identical_within_submission")),
     ("Hosts and geography", (
         "host_geography_plausible", "host_not_in_malavi", "host_name_resolves",
         "host_missing", "host_binomial", "country_not_in_malavi", "country_missing",
@@ -880,9 +897,14 @@ CHECK_GROUPS = (
         "prevalence_sanity", "prevalence_inconsistent", "record_without_prevalence",
         "lineage_previously_recorded")),
     ("Vectors", ("vector_missing", "vector_sanity", "vector_method")),
+    ("Morphospecies", (
+        "parasite_genus_carries_species", "parasite_genus_unrecognized",
+        "morphospecies_lineage_unknown", "morphospecies_binomial_malformed",
+        "comment_mentions_morphology")),
     ("The submission itself", (
         "headers_intact", "reference_missing", "reference_unpubl_malformed",
-        "reference_name_form", "reference_already_in_malavi",
+        "reference_unpubl_form", "reference_name_form", "reference_name_unrecognized",
+        "reference_already_in_malavi",
         "source_reprinted", "source_uncertain",
         "values_normalized", "lineage_missing", "records_unlinked")),
 )
@@ -906,7 +928,11 @@ FINDING_HEADLINES = {
     "sequence_qc": "{subjects}: unusual for a cytochrome b barcode",
     "sequence_needs_reframing": "{subjects} may not be in the standard reading frame",
     "sequence_stop_codon": "{subjects} contains a stop codon",
-    "reference_name_form": "{subjects} is not spelled the way MalAvi cites a study",
+    "sequences_identical_within_submission":
+        "{subjects} shares its sequence with another lineage proposed in this submission",
+    "reference_name_form": "{subjects} will be respelled the way MalAvi cites a study",
+    "reference_name_unrecognized":
+        "{subjects} is not a citation key MalAvi can file records under",
     "reference_already_in_malavi": "{subjects} is a study MalAvi already holds",
     "sequence_unplaceable": "{subjects} could not be placed against the alignment",
     "sequence_longer_than_window":
@@ -935,6 +961,11 @@ FINDING_HEADLINES = {
     "lineage_missing": "{subjects} has a record with no lineage name",
     "vector_missing": "{subjects} has a vector record with no vector species",
     "vector_sanity": "{subjects} names a vector that is not a known genus",
+    "parasite_genus_unrecognized": "{subjects} names a parasite genus MalAvi does not record",
+    "morphospecies_lineage_unknown":
+        "{subjects} is linked to a morphospecies but is not a lineage anyone has",
+    "morphospecies_binomial_malformed":
+        "{subjects} is linked to a species name that is not a binomial with a MalAvi genus",
 }
 
 
@@ -1158,7 +1189,10 @@ def _subject(text: Any) -> str:
 
 def _clean_summaries(submission: Optional[Dict[str, Any]], screen: Optional[Any],
                      attention: Sequence[Any]) -> Dict[str, str]:
-    """One green sentence per group, naming what came through clean."""
+    """One green sentence per group, naming what came through clean.
+
+    See :func:`_clean_links` for the links that accompany the Sequences sentence.
+    """
     submission = submission or {}
     reports = screen if isinstance(screen, list) else ([screen] if screen else [])
 
@@ -1197,6 +1231,36 @@ def _clean_summaries(submission: Optional[Dict[str, Any]], screen: Optional[Any]
             f"All {len(records)} host record{'s' if len(records) != 1 else ''} "
             f"resolved to known hosts and places")
     return out
+
+
+def _clean_links(group: str, submission: Optional[Dict[str, Any]],
+                 screen: Optional[Any]) -> str:
+    """The "see the alignment / see the sequence" links for the clean Sequences line.
+
+    A sequence that raised nothing gets a green "looks new" line and, until 2026-09-24,
+    nothing else -- while its neighbour with a warning had both links right under the
+    warning. A curator reading a 2026-09 report: the clean one is the one a curator
+    most wants to look at, precisely because nothing else will make them. So the clean
+    line carries the same two links as a finding does, one pair per clean sequence.
+    """
+    if group != "Sequences":
+        return ""
+    reports = screen if isinstance(screen, list) else ([screen] if screen else [])
+    flagged = {str(issue.get("subject")) for report in reports
+               for issue in report.get("issues", [])
+               if issue.get("subject") and _group_of(issue.get("code", "")) == "Sequences"}
+    clean = [str(entry.get("label") or "") for report in reports
+             for entry in report.get("sequences", [])
+             if entry.get("label") and str(entry.get("label")) not in flagged]
+    if not clean:
+        return ""
+    items = []
+    for label in clean:
+        prefix = f'<span class="subj">{esc(label)}</span> ' if len(clean) > 1 else ""
+        items.append(f'<li>{prefix}'
+                     f'<a class="jump" href="#aln-{esc(label)}">see the alignment</a>'
+                     f' <a class="jump" href="#seq-{esc(label)}">see the sequence</a></li>')
+    return f'<ul class="finds">{"".join(items)}</ul>'
 
 
 def _checks_section(run: CheckRun, workbook: Optional[str] = None,
@@ -1276,7 +1340,8 @@ def _checks_section(run: CheckRun, workbook: Optional[str] = None,
             if clean:
                 bits.append(f'<div class="check clear"><div class="hd">'
                             f'<span class="title">{esc(clean)}</span>'
-                            f'<span class="pill clear">fine</span></div></div>')
+                            f'<span class="pill clear">fine</span></div>'
+                            f'{_clean_links(group, submission, screen)}</div>')
         check = CHECKS.get(result.check_id)
         severity = _severity_class(result.check_id)
         classes = f"check {result.outcome.value}"
@@ -1325,7 +1390,8 @@ def _checks_section(run: CheckRun, workbook: Optional[str] = None,
             bits.append(f'<h3 class="group">{esc(group)}</h3>'
                         f'<div class="check clear"><div class="hd">'
                         f'<span class="title">{esc(clean)}</span>'
-                        f'<span class="pill clear">fine</span></div></div>')
+                        f'<span class="pill clear">fine</span></div>'
+                        f'{_clean_links(group, submission, screen)}</div>')
 
     quiet = sum(len(lines) for lines in minor_by_group.values())
     # A check with nothing to examine has not "found nothing" -- it had no opportunity to
@@ -1370,8 +1436,18 @@ def _checks_section(run: CheckRun, workbook: Optional[str] = None,
     return "\n".join(bits)
 
 
-def _sequences_section(screen: Optional[Any]) -> str:
-    """Per-sequence detail, from the template screen."""
+def _sequences_section(screen: Optional[Any],
+                       figures: Optional[Sequence[Any]] = None) -> str:
+    """Per-sequence detail, from the template screen.
+
+    Every row carries a "see the alignment" and a "see the sequence" link. Until
+    2026-09-23 those links hung only off *findings*, so a sequence that raised nothing --
+    PENOBS02 in MALAVI-SUB-2026-000007 -- had no way to its own picture while its
+    neighbour with a long-sequence warning did. A clean sequence is the one a curator
+    most wants to check by eye, precisely because nothing else is going to make them.
+    ``figures`` says which labels actually have an alignment drawn, so no link points
+    at an anchor that does not exist.
+    """
     if not screen:
         return ""
     reports = screen if isinstance(screen, list) else [screen]
@@ -1381,12 +1457,24 @@ def _sequences_section(screen: Optional[Any]) -> str:
     if not sequences:
         return ""
 
+    drawn = set()
+    for figure in figures or ():
+        data = figure.as_dict() if hasattr(figure, "as_dict") else figure
+        if isinstance(data, dict) and data.get("label"):
+            drawn.add(str(data["label"]))
+
     head = ("<tr><th>Lineage</th><th>Length</th><th>Offset</th><th>Stops</th>"
             "<th>Verdict</th><th>Nearest lineage</th><th>Distance</th>"
-            "<th>Compared over</th></tr>")
+            "<th>Compared over</th><th>See</th></tr>")
     rows = []
     for entry in sequences:
         nearest = (entry.get("nearest") or [{}])[0]
+        label = str(entry.get("label") or "")
+        links = []
+        if label in drawn:
+            links.append(f'<a class="jump" href="#aln-{esc(label)}">the alignment</a>')
+        if label and (entry.get("sequence") or entry.get("raw")):
+            links.append(f'<a class="jump" href="#seq-{esc(label)}">the sequence</a>')
         rows.append(
             "<tr>"
             f"<td class='mono'>{esc(entry.get('label'))}</td>"
@@ -1397,6 +1485,7 @@ def _sequences_section(screen: Optional[Any]) -> str:
             f"<td class='mono'>{esc(nearest.get('lineage'))}</td>"
             f"<td>{esc(nearest.get('distance'))}</td>"
             f"<td>{esc(nearest.get('comparable'))} positions</td>"
+            f"<td>{' · '.join(links)}</td>"
             "</tr>")
 
     # The sequences themselves, in FASTA. A curator meeting this pipeline for the first
@@ -1423,7 +1512,17 @@ def _sequences_section(screen: Optional[Any]) -> str:
             notes.append(f"<li><b>{esc(entry.get('label'))}</b> — {esc(note)}</li>")
 
     out = ['<h2 class="display">Sequences</h2>',
-           f'<div class="tablewrap"><table>{head}{"".join(rows)}</table></div>']
+           f'<div class="tablewrap"><table>{head}{"".join(rows)}</table></div>',
+           # Asked about on 2026-09-24: "why 330 if the sequence is 479 bp?" The number is
+           # a property of the MalAvi lineage, not of the submitted sequence, and nothing
+           # on the page said so.
+           '<p class="sub"><b>Compared over</b> counts the positions where both the '
+           'submitted sequence and the MalAvi lineage have a definite base. Fewer than '
+           '479 almost always means the <i>MalAvi</i> lineage is a partial sequence (3,340 '
+           'of the 5,368 lineages cover only part of the barcode), not that the submitted '
+           'sequence is short. Neighbours are ranked by mismatch <i>rate</i> over what '
+           'they share, so a partial lineage can rank first; the alignment section shows '
+           'full-length lineages beside it.</p>']
     if notes:
         out.append(f'<ul class="finds">{"".join(notes)}</ul>')
     if fasta:
@@ -1652,33 +1751,170 @@ def _alt_names_section(submission: Dict[str, Any]) -> str:
     except Exception:                                          # noqa: BLE001
         known = set()
 
+    # Names this same submission proposes as new. A submitter who lists a new lineage
+    # here as well (a 2026-09 submitter did, for both of theirs, with the same accessions as on
+    # NewLineages) is not wrong, and "no such lineage in MalAvi" -- though literally true
+    # -- read as an error. Say what is actually the case.
+    proposed = {str(p.get("lineage_name") or "").strip().upper()
+                for p in (submission.get("proposed_lineages") or [])}
+
     body = ""
     for entry in rows:
         malavi = str(entry.get("malavi_name") or "")
         alt = str(entry.get("alternative_name") or "")
         accessions = ", ".join(entry.get("accessions") or [])
-        if not known:
+        key = malavi.strip().upper()
+        if key and key in proposed:
+            status = '<td class="hit">proposed as new in this submission</td>'
+        elif not known:
             status = '<td class="miss">not checked</td>'
-        elif malavi.strip().upper() in known:
+        elif key in known:
             status = '<td class="hit">in MalAvi</td>'
         else:
             status = ('<td class="bad"><b>no such lineage in MalAvi</b></td>')
         body += (f"<tr><td class='mono'>{esc(malavi)}</td>"
                  f"<td class='mono'>{esc(alt)}</td>"
-                 f"<td class='mono'>{esc(accessions)}</td>{status}"
+                 f"<td class='mono'>{esc(accessions)}</td>"
+                 f"<td>{esc(entry.get('reference') or '')}</td>"
+                 f"<td class='comment'>{esc(entry.get('comment') or '')}</td>{status}"
                  f"<td class='rowno'>{esc((entry.get('source') or {}).get('row'))}</td>"
                  "</tr>")
 
+    # Each column is explained, because the table confused its first reader: "Published
+    # as" held sample numbers (87, S4, 2), one lineage appeared three times, and nothing
+    # said what "Row" counted. The submitter's Comment column is shown since 2026-09-23
+    # because two rows of a 2026-09 submission only made sense with it (three GenBank deposits of
+    # one lineage: two mitogenomes and one pooled accession).
     return ('<h2 class="display">Names for lineages already in MalAvi</h2>'
-            '<p class="sub">The submitter says each lineage on the left, which MalAvi '
-            'already holds, was published under the name on the right. Accepting these '
-            'makes the two names one lineage for every future reader, so they are worth '
-            'more attention than a row count suggests — and they are not proposals for '
-            'new lineages, which are listed separately above.</p>'
+            '<p class="sub">Lineages MalAvi already holds that this study published under '
+            'another label. Each row is one GenBank deposit, so a lineage deposited three '
+            'times appears three times. <b>MalAvi name</b>: the lineage as MalAvi names it. '
+            '<b>Published as</b>: the label used in the paper or GenBank record — often a '
+            'sample or isolate number rather than a lineage name. <b>Accessions</b>: the '
+            'deposit. <b>Reference</b> and <b>Comment</b>: as the submitter filled them '
+            'in. <b>Status</b>: whether MalAvi holds the lineage. <b>Sheet row</b>: the row '
+            'in the Alt_Lineage_names sheet, reproduced in the appendix. At ingest the '
+            'label becomes an alternative name of the lineage for every future reader, so '
+            'a curator should decide whether a bare sample number is worth keeping as a '
+            'synonym.</p>'
             '<div class="tablewrap"><table><thead><tr>'
             '<th>MalAvi name</th><th>Published as</th><th>Accessions</th>'
-            '<th>Status</th><th>Row</th></tr></thead>'
+            '<th>Reference</th><th>Comment</th><th>Status</th><th>Sheet row</th></tr>'
+            '</thead>'
             f'<tbody>{body}</tbody></table></div>')
+
+
+def _morphospecies_in_store() -> Dict[str, List[str]]:
+    """Lineage -> the described species MalAvi already links it to, or {} without a store."""
+    try:
+        from .release_store import TABLES, read_table, store_dir
+        from .config import repo_root
+        rows = read_table(store_dir(repo_root()), TABLES["morpho_species"])
+    except Exception:                                          # noqa: BLE001
+        return {}
+    held: Dict[str, List[str]] = {}
+    for row in rows:
+        name = str(row.get("LINEAGE_NAME") or "").strip().upper()
+        species = str(row.get("SPECIES_NAME") or "").strip()
+        if name and species and species not in held.setdefault(name, []):
+            held[name].append(species)
+    return held
+
+
+def _morphospecies_section(submission: Dict[str, Any],
+                           screen: Optional[Any] = None) -> str:
+    """Lineages this study links to a morphologically described species.
+
+    This is the content of MalAvi's ``morpho_species`` table -- 260 rows in the release,
+    each a lineage, a binomial, the study that made the link and a comment -- and until
+    2026-09-23 a submission had no way to supply it: the template had no sheet, and the
+    ingest wrote nothing to the table. A 2026-09 submission put the information in
+    record comments and in the genus column, and the report showed neither.
+
+    Two things a curator needs are stated per row. Where the link came from, because a
+    binomial typed in the ParasiteGenus column was read apart by the software rather
+    than declared by the submitter on the sheet meant for it. And what MalAvi already
+    links the lineage to, because a second species for a lineage that already has one is
+    the case that needs a taxonomist rather than a data entry.
+    """
+    rows = submission.get("morphospecies") or []
+    # Record comments the screen flagged as talking about morphology, for lineages that
+    # have no MorphoSpecies row. Listed here rather than only counted among the
+    # informational checks, because a curator reading "Morphospecies links" with two rows
+    # would otherwise take it that the study's species work is captured when three of
+    # three of that submission's five links were not (2026-09-24).
+    reports = screen if isinstance(screen, list) else ([screen] if screen else [])
+    mentioned = [issue for report in reports for issue in report.get("issues", [])
+                 if issue.get("code") == "comment_mentions_morphology"]
+    if not rows and not mentioned:
+        return ""
+
+    held = _morphospecies_in_store()
+    origin_words = {
+        "MorphoSpecies": "MorphoSpecies sheet",
+        "ParasiteGenus": "typed in the ParasiteGenus column of NewLineages",
+    }
+    body = ""
+    for entry in rows:
+        lineage = str(entry.get("lineage_name") or "")
+        already = held.get(lineage.strip().upper()) if held else None
+        if held == {}:
+            status = '<td class="miss">not checked</td>'
+        elif not already:
+            status = '<td class="miss">none</td>'
+        elif entry.get("morphospecies") in already:
+            status = f'<td class="hit">{esc("; ".join(already))} (the same)</td>'
+        else:
+            status = (f'<td class="bad"><b>{esc("; ".join(already))}</b> — a second '
+                      f'species for this lineage</td>')
+        body += (f"<tr><td class='mono'>{esc(lineage)}</td>"
+                 f"<td><i>{esc(entry.get('morphospecies') or '')}</i></td>"
+                 f"<td>{esc(entry.get('reference') or '')}</td>"
+                 f"<td class='comment'>{esc(entry.get('comment') or '')}</td>"
+                 f"<td>{esc(origin_words.get(str(entry.get('origin')), entry.get('origin')))}</td>"
+                 f"{status}"
+                 f"<td class='rowno'>{esc((entry.get('source') or {}).get('row'))}</td>"
+                 "</tr>")
+
+    out = ['<h2 class="display">Morphospecies links</h2>']
+    if rows:
+        out.append(
+            '<p class="sub">Lineages this study links to a morphologically described '
+            'parasite species. If the submission is accepted, each row below is written to '
+            'MalAvi\'s morphospecies table and the species is set on the lineage, for every '
+            'future reader. <b>From</b>: the MorphoSpecies sheet, or a species name the '
+            'submitter typed in the genus column of NewLineages, which the software read '
+            'apart into a genus and a species. <b>MalAvi already links</b>: what the release '
+            'holds for that lineage; a different species there needs a taxonomist\'s '
+            'decision, not a data entry. <b>Sheet row</b>: the row in the submitted '
+            'workbook, reproduced in the appendix.</p>'
+            '<div class="tablewrap"><table><thead><tr>'
+            '<th>Lineage</th><th>Morphospecies</th><th>Reference</th><th>Comment</th>'
+            '<th>From</th><th>MalAvi already links</th><th>Sheet row</th></tr></thead>'
+            f'<tbody>{body}</tbody></table></div>')
+    if mentioned:
+        # The submitter's words, verbatim, in a table. Nothing is paraphrased: the
+        # earlier rendering wrapped each quotation in a sentence of its own and read like
+        # a written summary of the comments, which is not what it was and not what a
+        # curator should be handed.
+        table_rows = ""
+        for issue in mentioned:
+            evidence = issue.get("evidence") or {}
+            table_rows += (
+                f"<tr><td class='mono'>{esc(_subject(issue.get('subject')))}</td>"
+                f"<td class='comment' style='max-width:none'>"
+                f"{esc(evidence.get('comment') or '')}</td>"
+                f"<td class='rowno'>{esc(evidence.get('row'))}</td></tr>")
+        out.append(
+            '<h3>Mentioned in comments, not recorded</h3>'
+            '<p class="sub">Record comments for these lineages mention morphology and no '
+            'MorphoSpecies row was submitted for them. Nothing from a comment is written '
+            'to MalAvi. A curator who confirms a link records it with a correction after '
+            'ingest, or asks the submitter to fill the MorphoSpecies sheet.</p>'
+            '<div class="tablewrap"><table><thead><tr><th>Lineage</th>'
+            '<th>Comment, as submitted</th><th>Sheet row</th></tr></thead>'
+            f'<tbody>{table_rows}</tbody></table></div>')
+    return "\n".join(out)
 
 
 def _submitted_files(metadata: Optional[Dict[str, Any]]) -> str:
@@ -2100,7 +2336,8 @@ def render_report(
                         submission=submission, screen=screen),
         _names_section(submission),
         _alt_names_section(submission),
-        _sequences_section(screen),
+        _morphospecies_section(submission, screen),
+        _sequences_section(screen, alignments),
         _alignment_section(alignments),
         _matrix_section(submission),
         _records_section(submission),

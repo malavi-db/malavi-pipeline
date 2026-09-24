@@ -282,7 +282,7 @@ def locate(query: str, ref: Reference
     :func:`_place` cuts the window out.
 
     :func:`_register` slides only a few bases either way, which suits a submitted
-    barcode. A mitochondrial genome (the Lis Vieira submission's CARCRI03, 5,756 bp)
+    barcode. A mitochondrial genome (a 2026-09 submission's CARCRI03, 5,756 bp)
     or a longer amplicon holds the window thousands of bases in, and used to come back
     "unplaceable, may not be cytochrome b". This seeds the search instead: consensus
     k-mers are looked up in the query, every offset they vote for is scored the same

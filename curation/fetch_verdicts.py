@@ -56,7 +56,7 @@ The moves themselves follow ``ops/curator-instructions.src.html``, which is what
 were actually promised:
 
 * **Accept** — the submission is picked up (``ready_for_review`` → ``in_review`` if it had
-  not been already) and then approved, which starts the 24-hour publish hold. The ledger
+  not been already) and then approved, which starts the three-day publish hold. The ledger
   refuses the approval outright if an objection stands, which is the rule that makes the
   hold worth having.
 * **Flag for further review** — moves to ``held``. Allowed from ``approved`` as well as
@@ -309,7 +309,7 @@ def _advance_after_verdict(entry: ledger.Entry, verdict: str, actor: str,
             if not approvable:
                 return "", why_not
     elif verdict in ledger.BLOCKING_VERDICTS:
-        # `approved` -> `held` is the late objection inside the 24-hour publish window,
+        # `approved` -> `held` is the late objection inside the three-day publish window,
         # and is the reason that window exists.
         if entry.state in ("in_review", "approved"):
             attempt("held")
@@ -595,7 +595,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("== malavi_rebuild :: fetch_verdicts ==")
 
     # The sheet's timezone is load-bearing, not cosmetic: Google records a response time
-    # with no offset, and that time drives the 24-hour publish hold and the 60-day timeout.
+    # with no offset, and that time drives the three-day publish hold and the 60-day timeout.
     zone_name = str(review.get("verdict_sheet_timezone", "UTC")).strip().upper()
     if zone_name not in ("UTC", "GMT"):
         print(f"\nconfig says the verdict sheet is set to {zone_name!r}, but this program\n"

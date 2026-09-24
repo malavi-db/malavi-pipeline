@@ -43,7 +43,7 @@ release was documented nowhere and four of its steps appeared in no section at a
 | 8 | `fetch_verdicts.py` — **writes by default**, so dry-run first | §3d |
 | 9 | if a correction was filed: `apply_corrections.py --apply`, then re-run steps 2 and 7 for the new revision | §3da |
 | 10 | `promote.py`, then commit `data/decisions.json` | §3d |
-| 11 | `notify_submitters.py` — **only after the 24-hour hold has elapsed, and nothing schedules it** | §1c |
+| 11 | `notify_submitters.py` — **only after the three-day hold has elapsed, and nothing schedules it** | §1c |
 | 12 | `close_submission.py --apply` if it ended; `lift_embargo.py --apply` if it was held | §3db, §3f |
 | 12b | if it was already ingested when it ended: `ingest_submissions.py --retract <id> --apply`, or no release can be built at all | §3e |
 
@@ -84,7 +84,7 @@ release was documented nowhere and four of its steps appeared in no section at a
   (`site_stats.json`), the download files that exist, `malaviR.release` in
   `config/project.yml`, and the release `db_snapshot.json` was built from. Each is a
   separate manual step above (22, 22, 19, 20) and nothing checks that they match.
-- **Budget two sittings.** The 24-hour hold between approval and notification means a
+- **Budget two sittings.** The three-day hold between approval and notification means a
   release that starts with a new submission cannot finish the same day.
 
 ---
@@ -519,7 +519,7 @@ removed on all three Drive folders.
 ## 3d. The review loop ✅ (operator commands added 2026-08-07)
 
 `curation/src/malavi_curation/ledger.py` holds the states, the verdict rules and the two
-clocks (`config/project.yml` → `review:`: 24h publish hold, 60-day awaiting-submitter
+clocks (`config/project.yml` → `review:`: 72 h (three-day) publish hold, 60-day awaiting-submitter
 timeout). Three programs drive it, and they run **in this order**:
 
 ```bash
@@ -543,7 +543,7 @@ anything else means the program itself could not run. A `2` is not a failure.
 **Run these on BIOMIX, by hand or from a local scheduler.**
 The review ledger has to persist and it lives in the gitignored intake tree,
 which the Actions runner discards at the end of every job. A scheduled run there would
-start from an empty ledger every time: the 24-hour hold would never elapse, because the
+start from an empty ledger every time: the three-day hold would never elapse, because the
 approval that started it would be gone.
 
 The submissions fetch was believed to be stateless and therefore safe there. It was not:
@@ -707,7 +707,7 @@ What to expect:
   logged as a deliberate act.
 - `--ask` **sends nothing**. Asking the question is an email a human writes; this records
   that we are waiting, which is what makes the clock run.
-- After a decline, `notify_submitters.py` sends the decline notice once the same 24-hour
+- After a decline, `notify_submitters.py` sends the decline notice once the same three-day
   wait an approval gets has elapsed — here it gives anyone a window to notice a mistake
   before a person is told their work was refused. Run `notify_submitters.py` after this.
 - **`--reopen` refuses a live submission**, and that refusal is load-bearing rather than
@@ -1004,11 +1004,11 @@ publish/push_feeds.sh
 >   on a real run as well.
 >
 > **An approval publishes no visible change on the day it is made.** The queue applies the
-> same rule as `notify_submitters.py`: an approval is not public until its 24-hour publish
+> same rule as `notify_submitters.py`: an approval is not public until its three-day publish
 > hold has elapsed, because a queue that said "Accepted" immediately would have to walk it
 > back in front of the submitter when a late hold landed. So the normal output of an
 > automatic publish right after an approval is *"the published queue was already current"*.
-> It flips a day later, on whichever run happens next — which in practice is the
+> It flips when the hold has elapsed, on whichever run happens next — which in practice is the
 > `notify_submitters.py` run you make after the hold. See
 > `build_site_feeds.public_review_state`.
 
@@ -1057,6 +1057,7 @@ Run all three suites.
 ```bash
 .venv/bin/python -m pytest curation -q                  # ✅ Python: the curation package
 node docs/assets/js/tests/test_sequence_check.mjs       # ✅ JS: the browser checker
+node docs/assets/js/tests/test_sequence_match.mjs       # ✅ JS: the sequence match page (~2 min)
 cd /mnt/ellisbiostore/malaviR && Rscript -e 'devtools::test()'   # ✅ R: malaviR
 ```
 
@@ -1129,6 +1130,7 @@ snapshot bundled in malaviR. Add `--dry-run` to any of them to report without wr
 Rscript export/build_site_stats.R
 Rscript export/build_sequence_index.R
 node docs/assets/js/tests/test_sequence_check.mjs      # must pass
+node docs/assets/js/tests/test_sequence_match.mjs      # must pass (~2 min)
 publish/push_site.sh --dry-run                         # inspect first
 publish/push_site.sh
 ```

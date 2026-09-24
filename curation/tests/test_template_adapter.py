@@ -80,6 +80,10 @@ def _template_workbook(**overrides):
     _sheet(workbook, "Vectors", "Lineages detected in vectors.",
            CANONICAL_HEADERS["Vectors"],
            overrides.get("vectors", []))
+    # Template 2026-09 only. None leaves the sheet out, as every 2026-07 workbook does.
+    if overrides.get("morpho") is not None:
+        _sheet(workbook, "MorphoSpecies", "Lineages linked to described species.",
+               CANONICAL_HEADERS["MorphoSpecies"], overrides["morpho"])
     return workbook
 
 
@@ -414,3 +418,73 @@ class TestIntakeContract:
         # Neither builder is allowed to be the only one that fits the contract.
         assert _build()["records"]
         assert build_submission(reference={"doi": "10.1234/abc"})["records"] == []
+
+
+# ---------------------------------------------------------------------------------------
+# Morphospecies (2026-09-23)
+# ---------------------------------------------------------------------------------------
+#
+# A 2026-09-02 submission linked five lineages to described species with
+# nowhere to put the link: two went into NewLineages.ParasiteGenus ("Plasmodium huffi",
+# "Haemoproteus (Parahaemoproteus) paraortalidum") and three into record comments. The
+# genus was read and the species half silently dropped. Template 2026-09 adds a sheet; the
+# genus column is read apart.
+
+class TestMorphospecies:
+    def test_a_workbook_without_the_sheet_links_nothing(self):
+        submission = _build()
+        assert submission["morphospecies"] == []
+
+    def test_a_morphospecies_row_is_carried_with_its_origin(self):
+        submission = _build(morpho=[["sgs1", "Plasmodium homocircumflexum", "Ellis et al 2026",
+                                     "blood films"]])
+        (link,) = submission["morphospecies"]
+        assert link["lineage_name"] == "SGS1"                 # MalAvi's casing
+        assert link["morphospecies"] == "Plasmodium homocircumflexum"
+        assert link["genus"] == "Plasmodium"
+        assert link["reference"] == "Ellis et al 2026"
+        assert link["comment"] == "blood films"
+        assert link["origin"] == "MorphoSpecies"
+        assert link["source"]["sheet"] == "MorphoSpecies"
+        assert link["source"]["row"] == 3
+
+    def test_a_species_typed_in_the_genus_column_is_read_apart(self):
+        submission = _build(new_lineages=[
+            ["CARCRI03", "PQ241456", "Plasmodium huffi", "Cariama cristata", None,
+             "Vieira et al 2024", None],
+            ["PENOBS02", "PX924991", "Haemoproteus (Parahaemoproteus) paraortalidum",
+             "Penelope obscura", None, "Vieira et al 2026c", None]])
+        genus = {p["lineage_name"]: p["parasite_genus"]
+                 for p in submission["proposed_lineages"]}
+        assert genus == {"CARCRI03": "Plasmodium", "PENOBS02": "Haemoproteus"}
+        links = {m["lineage_name"]: m for m in submission["morphospecies"]}
+        assert links["CARCRI03"]["morphospecies"] == "Plasmodium huffi"
+        assert links["PENOBS02"]["morphospecies"] == "Haemoproteus paraortalidum"
+        assert links["PENOBS02"]["origin"] == "ParasiteGenus"
+        assert links["PENOBS02"]["source"]["sheet"] == "NewLineages"
+        assert links["PENOBS02"]["reference"] == "Vieira et al 2026c"
+        # The split is on the record, beside what was typed.
+        changes = [c for c in submission["provenance"]["normalizations"]
+                   if c["field"] == "parasite_genus"]
+        assert {(c["submitted"], c["normalized"]) for c in changes} == {
+            ("Plasmodium huffi", "Plasmodium"),
+            ("Haemoproteus (Parahaemoproteus) paraortalidum", "Haemoproteus")}
+
+    def test_a_bare_genus_records_no_link_and_no_change(self):
+        submission = _build()
+        assert submission["morphospecies"] == []
+        assert not [c for c in submission["provenance"]["normalizations"]
+                    if c["field"] == "parasite_genus"]
+
+    def test_an_unreadable_species_is_kept_as_typed_for_the_curator(self):
+        submission = _build(morpho=[["SGS1", "Plasmodium sp. nov.", "Ellis et al 2026",
+                                     None]])
+        (link,) = submission["morphospecies"]
+        assert link["morphospecies"] == "Plasmodium sp. nov."
+        assert link["genus"] == "Plasmodium"
+
+    def test_the_submission_still_validates(self):
+        """The new array is in the schema; validation runs by default in _build."""
+        _build(morpho=[["SGS1", "Plasmodium homocircumflexum", "Ellis et al 2026", None]],
+               new_lineages=[["TUMIG19", "MK493368", "Plasmodium huffi",
+                              "Turdus migratorius", None, "Ellis et al 2026", None]])

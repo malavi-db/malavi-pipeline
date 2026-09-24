@@ -66,15 +66,42 @@ class TestRecognition:
         assert not reference_names.is_unpublished(name)
         assert reference_names.problem_with(name) is None
 
-    def test_the_misspelling_is_recognized_but_reported(self):
-        """'unpub' has to count as unpublished AND be flagged.
+    def test_the_misspelling_is_recognized_and_respelled(self):
+        """'unpub' has to count as unpublished AND come out spelled 'unpubl'.
 
-        Counting it is what stops a curator's filter missing those rows today; flagging
-        it is what stops the second spelling spreading into new submissions.
+        Counting it is what stops a curator's filter missing those rows today; respelling
+        it is what stops the second spelling spreading into new submissions. Until
+        2026-09-23 the respelling was only *suggested* (problem_with returned a message
+        telling someone to retype it); now it is applied, so problem_with is silent and
+        published_form -- which the ingest calls at every store write -- does the work.
         """
         assert reference_names.is_unpublished("Romano et al unpub")
-        assert "unpubl" in (reference_names.problem_with("Romano et al unpub") or "")
+        assert reference_names.problem_with("Romano et al unpub") is None
         assert reference_names.canonical("Romano et al unpub") == "Romano et al unpubl"
+        assert reference_names.published_form("Romano et al unpub") == "Romano et al unpubl"
+
+    @pytest.mark.parametrize("typed, stored", [
+        # The real case, 2026-09-23 (MALAVI-SUB-2026-000008): a comma, "et. al." with two
+        # periods, and the marker written out in full.
+        ("Ellis et. al., unpublished", "Ellis et al unpubl"),
+        ("Ellis et al unpublished data", "Ellis et al unpubl"),
+        ("Ellis et al., Unpublished.", "Ellis et al unpubl"),
+        ("Barrow et al. unpubl", "Barrow et al unpubl"),
+        ("Rojo et al unpub B", "Rojo et al unpubl b"),
+        ("Marzal, unpublished", "Marzal unpubl"),
+    ])
+    def test_every_variant_seen_is_respelled(self, typed, stored):
+        assert reference_names.is_unpublished(typed)
+        assert reference_names.problem_with(typed) is None
+        assert reference_names.canonical(typed) == stored
+        assert reference_names.published_form(typed) == stored
+        # The authors are recoverable in MalAvi's spelling, which is what the rename at
+        # publication keys on.
+        assert reference_names.authors_of(typed) == stored.rsplit(" unpubl", 1)[0]
+
+    def test_a_published_key_is_never_read_as_unpublished(self):
+        for name in ("Vieira et al., 2023", "Unpublished Ltd 2019"):
+            assert not reference_names.is_unpublished(name)
 
     def test_canonical_preserves_a_disambiguator(self):
         assert reference_names.canonical("Rojo et al unpub b") == "Rojo et al unpubl b"
@@ -289,5 +316,8 @@ class TestPublishedForm:
     def test_problem_names_the_canonical_form(self):
         from malavi_curation.reference_names import problem_with_published
         assert "'Vieira et al 2023'" in problem_with_published("Vieira et al., 2023")
+        # Phrased as what will happen, not as an instruction to retype: the ingest does it.
+        assert "will be filed as" in problem_with_published("Vieira et al., 2023")
+        assert "Write" not in problem_with_published("Vieira et al., 2023")
         assert problem_with_published("Vieira et al 2023") is None
         assert problem_with_published("Barrow et al unpubl") is None

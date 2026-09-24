@@ -229,6 +229,16 @@ def _stamp(hours_ago):
     return moment.replace(microsecond=0).isoformat()
 
 
+def _hold_hours():
+    """The publish hold as configured, so these tests follow config/project.yml.
+
+    They said 25 hours until 2026-09-23, which was "past the hold" only while the hold
+    was 24; the day it became 72 the approval test started reporting "in_review".
+    """
+    from malavi_curation.ledger import _review_config
+    return _review_config()["publish_hold_hours"]
+
+
 def test_an_approval_inside_the_hold_still_reads_as_under_review(feeds_cli):
     entry = _approved_entry(_stamp(1))
     assert feeds_cli.public_review_state(entry) == "in_review"
@@ -238,7 +248,7 @@ def test_an_approval_inside_the_hold_still_reads_as_under_review(feeds_cli):
 
 
 def test_an_approval_becomes_public_once_the_hold_has_elapsed(feeds_cli):
-    entry = _approved_entry(_stamp(25))
+    entry = _approved_entry(_stamp(_hold_hours() + 1))
     assert feeds_cli.public_review_state(entry) == "approved"
     label, _pill = feeds_cli.public_status(
         feeds_cli.public_review_state(entry), screened=True, has_errors=False)
@@ -247,7 +257,7 @@ def test_an_approval_becomes_public_once_the_hold_has_elapsed(feeds_cli):
 
 def test_a_late_hold_keeps_an_elapsed_approval_off_the_public_page(feeds_cli):
     """A hold recorded late in the window still wins, as it does everywhere else."""
-    entry = _approved_entry(_stamp(25))
+    entry = _approved_entry(_stamp(_hold_hours() + 1))
     entry.verdicts.append(_ledger.Verdict(id="V1", curator="sari", verdict="hold",
                                           revision=1, at=_stamp(2)))
     assert _ledger.blocking_holds(entry)

@@ -208,7 +208,7 @@ def _timestamp(value: Any, sheet_timezone: timezone = timezone.utc) -> Optional[
 
     **The timezone is the subtle part.** Google stamps a response in the *spreadsheet's*
     timezone and records no offset, so a bare "2026-08-06 13:21:26" is ambiguous by up to a
-    day. That ambiguity lands directly on the 24-hour publish hold and the 60-day
+    day. That ambiguity lands directly on the three-day publish hold and the 60-day
     awaiting-submitter timeout, which is why the ledger refuses timestamps it cannot read
     rather than guessing. Set the responses sheet to UTC (File > Settings > Time zone) and
     this assumption is correct by construction; ``sheet_timezone`` exists so a sheet that is

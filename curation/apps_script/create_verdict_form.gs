@@ -138,7 +138,7 @@ function createVerdictForm() {
   //
   // Google stamps each response in the SPREADSHEET's timezone and records no offset, so
   // the zone is the only thing that makes a response time unambiguous -- and that time
-  // drives the 24h publish hold and the 60-day timeout. verdicts.parse_row assumes UTC,
+  // drives the three-day publish hold and the 60-day timeout. verdicts.parse_row assumes UTC,
   // per `review.verdict_sheet_timezone` in config/project.yml.
   //
   // A new sheet inherits the creating account's locale (US Eastern for malaviadmin), which
@@ -447,7 +447,7 @@ function buildClosePage(form) {
       'Lead curators only, and it ends the submission. Use it when a flag was never ' +
       'answered, or the submission was never going to be included.\n\n' +
       'Its reserved lineage names are released, it disappears from the public queue, and ' +
-      'the submitter is told — after the same 24-hour wait an approval gets, so there is ' +
+      'the submitter is told — after the same three-day wait an approval gets, so there is ' +
       'a window to notice a mistake before somebody is told their work was refused.\n\n' +
       'A submission that a curator has already accepted cannot be closed here. Flag it ' +
       'first, so that the objection is on the record and attributed to whoever raised it.');

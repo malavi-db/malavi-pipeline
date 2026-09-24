@@ -326,12 +326,14 @@ def _describe_change(columns: Sequence[Dict[str, Any]], differing: Sequence[int]
     transversions = [c for c in columns if c["kind"] == "transversion"]
     rare = [c for c in columns if c["rare"]]
 
+    # Only the case a curator needs pointed out is said. The all-silent case used to get
+    # a sentence of its own ("None of these change the amino acid -- every difference is
+    # silent"), which restated what the shading in the table above already shows and was
+    # printed under nearly every figure; dropped 2026-09-23 at Vincenzo's request.
     if nonsyn:
         changes = ", ".join(f"{c['position']} ({c['amino_acid']})" for c in nonsyn[:4])
         notes.append(f"{len(nonsyn)} of these change the amino acid: {changes}"
                      + (", and others" if len(nonsyn) > 4 else "") + ".")
-    else:
-        notes.append("None of these change the amino acid — every difference is silent.")
 
     if transversions:
         notes.append(f"{len(transversions)} "

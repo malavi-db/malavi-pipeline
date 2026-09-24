@@ -174,13 +174,15 @@ submissions:
 # touching the state machine.
 # -----------------------------------------------------------------------------
 review:
-  # How long an approved submission waits before it may be released, so a second
-  # curator working the same day can still weigh in. A hold recorded during this
-  # window blocks the release.
-  publish_hold_hours: 24
+  # How long an approved submission waits before it may be released, so another
+  # curator can still weigh in. A hold recorded during this window blocks the
+  # release. Three days (72 hours), lengthened from 24 hours on 2026-09-23: with
+  # several curators reviewing part-time, one day was not enough for a second
+  # opinion to arrive before the approval became final.
+  publish_hold_hours: 72
   # How often the promoter job runs. It must divide into publish_hold_hours
   # comfortably: on a daily job an approval recorded at 07:00 would wait nearly
-  # 48 hours, which turns a 24-hour hold into a two-day one.
+  # 96 hours, which turns a three-day hold into a four-day one.
   promoter_interval_hours: 6
   # How long a submission may sit waiting on its submitter before it goes dormant
   # and its reserved lineage names are released back. Decided 2026-08-06.
@@ -279,7 +281,7 @@ review:
   # The responses sheet is set to **GMT, no daylight saving (UTC+00:00)**, chosen
   # 2026-08-06. DO NOT CHANGE IT. Google stamps each response in the spreadsheet's
   # timezone and records no offset, so the zone is the only thing that makes a
-  # response time unambiguous -- and that time drives the 24h publish hold and the
+  # response time unambiguous -- and that time drives the three-day publish hold and the
   # 60-day timeout. A DST-observing zone such as London would shift every summer
   # timestamp by an hour with nothing to show for it in the data.
   #

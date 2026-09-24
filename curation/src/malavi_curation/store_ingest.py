@@ -287,10 +287,65 @@ def parasite_genus_by_lineage(workbook) -> Dict[str, str]:
     found: Dict[str, str] = {}
     for _row_number, values in body:
         name = lineage_cell(header, values, "LINEAGE_NAME")
-        genus = (template_adapter.cell(header, values, "ParasiteGenus") or "").strip()
+        # Cleaned to one of the three genera, never copied. The cell can hold a species
+        # name ("Plasmodium huffi") or a subgenus in parentheses, and PARASITE_GENUS is
+        # a genus column.
+        genus = normalize.clean_genus(
+            template_adapter.cell(header, values, "ParasiteGenus")) or ""
         if name and genus:
             found.setdefault(name, genus)
     return found
+
+
+def morphospecies_links(workbook) -> List[Dict[str, str]]:
+    """Every lineage -> described-species link a workbook makes, and where each came from.
+
+    Two sources, in this order. The ``MorphoSpecies`` sheet (template 2026-09): one row
+    per link, with the study and a comment. And a species name typed in
+    ``NewLineages.ParasiteGenus`` -- "Plasmodium huffi" where "Plasmodium" was asked for
+    -- which is read apart with :func:`normalize.parasite_binomial`; the genus goes to the
+    genus column and the species name is a link whose comment says where it was typed.
+
+    The second source exists because that is where the information arrived in the first
+    real submission (2026-09-02), and dropping it was the fault: the ingest
+    wrote the whole cell into ``lineages.GENUS_NAME`` and kept the species nowhere.
+
+    Each link: ``lineage``, ``genus``, ``species`` (the binomial), ``reference`` (as typed,
+    spelled MalAvi's way by the caller), ``comment``, ``origin``. A MorphoSpecies row whose
+    species cannot be read as a binomial is skipped here and reported by the screen; the
+    store must not receive "Plasmodium sp. nov." as a species.
+    """
+    links: List[Dict[str, str]] = []
+    header, body = _sheet(workbook, template_adapter.SHEET_MORPHO, "LINEAGE_NAME")
+    for row_number, values in body:
+        name = lineage_cell(header, values, "LINEAGE_NAME")
+        binomial = normalize.parasite_binomial(
+            template_adapter.cell(header, values, "MorphoSpecies"))
+        if not name or not binomial:
+            continue
+        links.append({
+            "lineage": name, "genus": binomial[0], "species": binomial[1],
+            "reference": template_adapter.cell(header, values, "Reference") or "",
+            "comment": normalize.text(
+                template_adapter.cell(header, values, "Comment")) or "",
+            "origin": f"{template_adapter.SHEET_MORPHO} row {row_number}",
+        })
+    header, body = _sheet(workbook, template_adapter.SHEET_NEWLINEAGES, "LINEAGE_NAME")
+    for row_number, values in body:
+        name = lineage_cell(header, values, "LINEAGE_NAME")
+        binomial = normalize.parasite_binomial(
+            template_adapter.cell(header, values, "ParasiteGenus"))
+        if not name or not binomial:
+            continue
+        links.append({
+            "lineage": name, "genus": binomial[0], "species": binomial[1],
+            "reference": template_adapter.cell(header, values, "Reference") or "",
+            "comment": (f"Species name typed in the ParasiteGenus column of the "
+                        f"{template_adapter.SHEET_NEWLINEAGES} sheet (row {row_number}) "
+                        f"and read apart at ingest"),
+            "origin": f"{template_adapter.SHEET_NEWLINEAGES} row {row_number}",
+        })
+    return links
 
 
 def host_rows_from_workbook(path: Path, submission_id: str, release: str,
@@ -640,6 +695,7 @@ UNHOUSED = {
     "Vectors": ("CountryRegion", "No_found", "No_tested", "Comment"),
     "Alt_Lineage_names": ("GenBankNr", "Comment"),
     "Reference": ("DOI",),
+    # MorphoSpecies (template 2026-09): every column has a home in morpho_species.
 }
 
 
@@ -667,10 +723,15 @@ def lineage_rows(workbook, submission_id: str, release: str
                  ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """NewLineages + Sequences -> the ``lineages`` table.
 
-    ``GENUS_NAME``/``SPECIES_NAME`` here are the *parasite* morphospecies, not the host.
-    The template asks only for the genus, so the species is left blank: assigning a
-    lineage to a morphospecies is a taxonomic judgment recorded in ``morpho_species``,
-    with a reference behind it, and inferring one from a genus would be inventing it.
+    ``GENUS_NAME``/``SPECIES_NAME`` here are the *parasite* genus and morphospecies, not
+    the host. ``GENUS_NAME`` is the ParasiteGenus cell **cleaned to one of the three
+    genera** -- until 2026-09-23 it was copied verbatim, so "Plasmodium huffi" would have
+    become a fourth value in a column that holds exactly three. ``SPECIES_NAME`` is the
+    described species when the workbook links this lineage to one (the MorphoSpecies
+    sheet, or a binomial typed in the genus column; see :func:`morphospecies_links`), and
+    blank otherwise: it is never inferred from a genus, which would be inventing it. The
+    242 lineages in the store that carry a species all agree with their morpho_species
+    row, which is the invariant kept here.
 
     **``SEQ_LENGTH`` is not a length.** Despite the name it is categorical -- ``Full``
     (4,828 lineages in the store) or ``Partial`` (540), with no numeric value anywhere.
@@ -702,6 +763,13 @@ def lineage_rows(workbook, submission_id: str, release: str
             template_adapter.cell(seq_header, values, "SEQUENCE"))
         if name and cleaned:
             sequences.setdefault(name, cleaned)
+
+    # The described species this workbook links each new lineage to, if any. The first
+    # link wins when a lineage has several: a lineage with two morphospecies is exactly
+    # the case a curator has to settle, and it is reported.
+    species_by_lineage: Dict[str, str] = {}
+    for link in morphospecies_links(workbook):
+        species_by_lineage.setdefault(link["lineage"], link["species"])
 
     columns = TABLES["lineages"].columns
     rows, notes = [], []
@@ -744,7 +812,29 @@ def lineage_rows(workbook, submission_id: str, release: str
         row = {column: "" for column in columns}
         row["LINEAGE_NAME"] = name
         row["GENBANK_ACC"] = ", ".join(accessions)
-        row["GENUS_NAME"] = template_adapter.cell(header, values, "ParasiteGenus") or ""
+        genus_cell = (template_adapter.cell(header, values, "ParasiteGenus") or "").strip()
+        genus = normalize.clean_genus(genus_cell) or ""
+        row["GENUS_NAME"] = genus
+        if genus_cell and genus != genus_cell:
+            binomial = normalize.parasite_binomial(genus_cell)
+            if binomial:
+                notes.append(
+                    f"NewLineages row {row_number}: {name} ParasiteGenus {genus_cell!r} "
+                    f"stored as genus {genus!r}; the species name {binomial[1]!r} goes to "
+                    f"morpho_species and SPECIES_NAME, not into the genus column")
+            elif genus:
+                notes.append(
+                    f"NewLineages row {row_number}: {name} ParasiteGenus {genus_cell!r} "
+                    f"stored as {genus!r}")
+            else:
+                notes.append(
+                    f"NewLineages row {row_number}: {name} ParasiteGenus {genus_cell!r} is "
+                    f"not a genus MalAvi records; GENUS_NAME is left blank for a curator")
+        row["SPECIES_NAME"] = species_by_lineage.get(name, "")
+        if row["SPECIES_NAME"]:
+            notes.append(
+                f"NewLineages row {row_number}: {name} is linked to the described species "
+                f"{row['SPECIES_NAME']!r}; SPECIES_NAME set and a morpho_species row written")
         row["SEQUENCE"] = sequence
         # Left for a curator -- see the note in this function's docstring.
         row["SEQ_LENGTH"] = ""
@@ -806,6 +896,62 @@ def alt_name_rows(workbook, submission_id: str, release: str
         row["_added"] = release
         rows.append(row)
     return rows, _unhoused_notes("Alt_Lineage_names", header, body)
+
+
+def morpho_rows(workbook, submission_id: str, release: str
+                ) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """MorphoSpecies sheet + binomials in the genus column -> the ``morpho_species`` table.
+
+    One row per distinct (lineage, species, reference). ``MORPHOLOGY_COMMENT`` is the
+    submitter's comment, or for a link read apart from the genus column, a sentence saying
+    so -- a curator reading the table two years on should be able to tell a declared link
+    from one the software recovered.
+
+    For a lineage MalAvi already holds (a 2026-09 submission linked CARCRI01, a 2023 lineage, to
+    Leucocytozoon cariamae), the row is written here but ``lineages.SPECIES_NAME`` on the
+    existing lineage row is **not** touched -- ingest never edits rows it did not write.
+    That is noted so a curator can set it with a correction.
+    """
+    links = morphospecies_links(workbook)
+    if not links:
+        return [], []
+    declared = set()
+    header, body = _sheet(workbook, template_adapter.SHEET_NEWLINEAGES, "LINEAGE_NAME")
+    for _n, values in body:
+        declared.add(lineage_cell(header, values, "LINEAGE_NAME"))
+
+    columns = TABLES["morpho_species"].columns
+    rows, notes, seen = [], [], set()
+    for link in links:
+        reference = reference_names.published_form(link["reference"])
+        key = (link["lineage"], link["species"], reference)
+        if key in seen:
+            continue
+        seen.add(key)
+        row = {column: "" for column in columns}
+        row["LINEAGE_NAME"] = link["lineage"]
+        row["GENUS_NAME"] = link["genus"]
+        row["SPECIES_NAME"] = link["species"]
+        row["REFERENCE_NAME"] = reference
+        row["MORPHOLOGY_COMMENT"] = link["comment"]
+        row["_source"] = submission_id
+        row["_added"] = release
+        rows.append(row)
+        if link["lineage"] not in declared:
+            notes.append(
+                f"{link['origin']}: {link['lineage']} is linked to {link['species']!r}. "
+                f"The morpho_species row is written, but {link['lineage']} is a lineage "
+                f"MalAvi already holds, so its SPECIES_NAME in the lineages table is not "
+                f"changed here; a curator sets it with a correction")
+    by_lineage: Dict[str, set] = {}
+    for row in rows:
+        by_lineage.setdefault(row["LINEAGE_NAME"], set()).add(row["SPECIES_NAME"])
+    for lineage, species in sorted(by_lineage.items()):
+        if len(species) > 1:
+            notes.append(
+                f"{lineage} is linked to {len(species)} different species "
+                f"({', '.join(sorted(species))}); a curator has to settle which")
+    return rows, notes
 
 
 def reference_rows(workbook, submission_id: str, release: str
@@ -994,9 +1140,13 @@ def tables_from_workbook(path: Path, submission_id: str, release: str,
                          ) -> Tuple[Dict[str, List[Dict[str, Any]]], List[str]]:
     """Every store table a submission's workbook supplies. Returns ``(tables, notes)``.
 
-    ``morpho_species`` is absent because the template has no sheet for it: assigning a
-    lineage to a named morphospecies is a taxonomic act with its own literature, and a
-    curator records it rather than a submitter declaring it.
+    ``morpho_species`` is supplied since 2026-09-23, from the MorphoSpecies sheet of
+    template 2026-09 and from species names typed in the genus column (see
+    :func:`morphospecies_links`). Before that the table was deliberately absent, on the
+    reasoning that linking a lineage to a described species is a curator's act; the first
+    real submission showed that submitters make the link anyway, in whatever cell is
+    nearest, and that dropping it lost information the paper had. The curator still
+    decides -- every row is in the report before anything is ingested.
     """
     import openpyxl
 
@@ -1011,6 +1161,7 @@ def tables_from_workbook(path: Path, submission_id: str, release: str,
     for name, builder in (("lineages", lineage_rows),
                           ("vector_records", vector_rows),
                           ("alt_names", alt_name_rows),
+                          ("morpho_species", morpho_rows),
                           ("references", reference_rows)):
         rows, table_notes = builder(workbook, submission_id, release)
         tables[name] = rows

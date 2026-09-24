@@ -759,3 +759,161 @@ def test_the_id_cell_uses_a_class_the_stylesheet_defines():
 
     assert 'class="handle"' in html
     assert "td.handle" in report_html._stylesheet()
+
+
+class TestMorphospeciesSection:
+    """2026-09-23: the links a study makes between lineages and described species."""
+
+    def _links(self):
+        return [
+            {"lineage_name": "CARCRI03", "morphospecies": "Plasmodium huffi",
+             "genus": "Plasmodium", "reference": "Vieira et al 2024", "comment": None,
+             "origin": "ParasiteGenus", "source": {"sheet": "NewLineages", "row": 3}},
+            {"lineage_name": "CARCRI01", "morphospecies": "Leucocytozoon cariamae",
+             "genus": "Leucocytozoon", "reference": "Vieira et al 2023",
+             "comment": HOSTILE, "origin": "MorphoSpecies",
+             "source": {"sheet": "MorphoSpecies", "row": 4}},
+        ]
+
+    def test_absent_when_nothing_is_linked(self):
+        html = render_report(_submission(), _run())
+        assert "Morphospecies links" not in html
+
+    def test_every_link_is_shown_with_where_it_came_from(self, monkeypatch):
+        monkeypatch.setattr(report_html, "_morphospecies_in_store", lambda: {})
+        html = render_report(_submission(morphospecies=self._links()), _run())
+        assert "Morphospecies links" in html
+        assert "<i>Plasmodium huffi</i>" in html
+        assert "typed in the ParasiteGenus column of NewLineages" in html
+        assert "MorphoSpecies sheet" in html
+        assert "not checked" in html                      # no store to compare against
+        assert HOSTILE not in html                         # the comment is escaped
+
+    def test_a_second_species_for_a_linked_lineage_is_flagged(self, monkeypatch):
+        monkeypatch.setattr(report_html, "_morphospecies_in_store",
+                            lambda: {"CARCRI01": ["Leucocytozoon toddi"]})
+        html = render_report(_submission(morphospecies=self._links()), _run())
+        assert "a second species for this lineage" in html
+        assert "Leucocytozoon toddi" in html
+
+    def test_comments_about_morphology_are_listed_as_not_recorded(self, monkeypatch):
+        monkeypatch.setattr(report_html, "_morphospecies_in_store", lambda: {})
+        screen = [{"issues": [{"code": "comment_mentions_morphology", "subject": "CARCRI01",
+                               "severity": "info",
+                               "message": "CARCRI01: a record comment mentions morphology",
+                               "evidence": {"comment": "new species " + HOSTILE,
+                                            "row": 7, "sheet": "Hosts_and_Sites"}}],
+                   "sequences": []}]
+        html = render_report(_submission(morphospecies=self._links()), _run(), screen=screen)
+        assert "Mentioned in comments, not recorded" in html
+        assert "Nothing from a comment is written" in html
+        assert "<th>Comment, as submitted</th>" in html
+        assert "new species " in html and HOSTILE not in html      # verbatim, escaped
+        assert "<td class='rowno'>7</td>" in html
+
+    def test_the_section_appears_for_mentions_alone(self, monkeypatch):
+        monkeypatch.setattr(report_html, "_morphospecies_in_store", lambda: {})
+        screen = [{"issues": [{"code": "comment_mentions_morphology", "subject": "ARACAJ01",
+                               "severity": "info", "message": "ARACAJ01: new species"}],
+                   "sequences": []}]
+        html = render_report(_submission(), _run(), screen=screen)
+        assert "Morphospecies links" in html
+        assert "<th>Morphospecies</th>" not in html          # no table with no rows
+        assert "Mentioned in comments, not recorded" in html
+
+
+class TestSequencesTableLinks:
+    """2026-09-23: every sequence row links to its alignment and its FASTA, not only the
+    ones a finding happened to mention (PENOBS02 had neither)."""
+
+    def test_links_on_every_row_that_has_a_figure_and_a_sequence(self):
+        screen = [{"sequences": [
+            {"label": "CARCRI03", "raw_length": 5756, "offset": 0, "n_stop_codons": 0,
+             "verdict": "new", "nearest": [{"lineage": "SGS1", "distance": 3,
+                                            "comparable": 479}], "sequence": "ACGT"},
+            {"label": "PENOBS02", "raw_length": 479, "offset": 0, "n_stop_codons": 0,
+             "verdict": "new", "nearest": [{"lineage": "SGS1", "distance": 5,
+                                            "comparable": 479}], "sequence": "ACGT"},
+        ]}]
+        figures = [{"label": "CARCRI03", "positions": [], "rows": [], "notes": []},
+                   {"label": "PENOBS02", "positions": [], "rows": [], "notes": []}]
+        html = render_report(_submission(), _run(), screen=screen, alignments=figures)
+        for label in ("CARCRI03", "PENOBS02"):
+            assert f'href="#aln-{label}">the alignment</a>' in html
+            assert f'href="#seq-{label}">the sequence</a>' in html
+            assert f'id="aln-{label}"' in html             # and the anchors exist
+            assert f'id="seq-{label}"' in html
+
+    def test_no_alignment_link_when_no_figure_was_drawn(self):
+        screen = [{"sequences": [
+            {"label": "PENOBS02", "raw_length": 479, "offset": 0, "n_stop_codons": 0,
+             "verdict": "new", "nearest": [], "sequence": "ACGT"}]}]
+        html = render_report(_submission(), _run(), screen=screen, alignments=None)
+        # The Sequences TABLE knows which figures exist and omits the link; the checks
+        # section's green line does not and links regardless, like a finding does.
+        row = html.split("<td class='mono'>PENOBS02</td>", 1)[1].split("</tr>", 1)[0]
+        assert 'href="#aln-PENOBS02"' not in row
+        assert 'href="#seq-PENOBS02">the sequence</a>' in row
+
+
+class TestAltNamesTable:
+    """2026-09-23: the table that confused its first reader."""
+
+    def test_a_name_proposed_as_new_here_is_not_called_missing(self):
+        rows = [{"malavi_name": "TUMIG19", "alternative_name": "S4",
+                 "accessions": ["PQ241456"], "reference": "Vieira et al., 2024",
+                 "comment": "from individual S4",
+                 "source": {"sheet": "Alt_Lineage_names", "row": 4}}]
+        html = render_report(_submission(alternative_names=rows), _run())
+        assert "proposed as new in this submission" in html
+        assert "no such lineage in MalAvi" not in html
+        assert "from individual S4" in html                # the Comment column is shown
+        assert "Vieira et al., 2024" in html               # and the Reference
+        assert "<th>Sheet row</th>" in html
+        assert "Each row is one GenBank deposit" in html
+
+
+class TestCleanSequenceLine:
+    """2026-09-24: the green "looks new" line links to the picture and the FASTA too."""
+
+    def _screen(self):
+        return [{"issues": [{"code": "sequence_longer_than_window", "subject": "CARCRI03",
+                             "severity": "warn", "message": "long"}],
+                 "sequences": [
+                     {"label": "CARCRI03", "raw_length": 5756, "sequence": "ACGT"},
+                     {"label": "PENOBS02", "raw_length": 479, "sequence": "ACGT"}]}]
+
+    def test_the_clean_sequence_gets_both_links_under_its_green_line(self):
+        html = render_report(_submission(), _run(), screen=self._screen())
+        assert "Sequence (PENOBS02) looks new" in html
+        clean_card = html.split("Sequence (PENOBS02) looks new", 1)[1].split("<h3", 1)[0]
+        assert 'href="#aln-PENOBS02">see the alignment</a>' in clean_card
+        assert 'href="#seq-PENOBS02">see the sequence</a>' in clean_card
+
+    def test_several_clean_sequences_are_each_named(self):
+        screen = self._screen()
+        screen[0]["issues"] = []
+        html = render_report(_submission(), _run(), screen=screen)
+        assert "Sequences (CARCRI03, PENOBS02) look new" in html
+        for label in ("CARCRI03", "PENOBS02"):
+            assert f'<span class="subj">{label}</span> <a class="jump" href="#aln-{label}">' in html
+
+
+class TestIdenticalPairOnPageOne:
+    """2026-09-24: two names for one sequence is marked in red in the summary, not only
+    as a card among the checks."""
+
+    def test_both_names_are_marked_in_the_summary(self):
+        proposed = [{"lineage_name": n, "parasite_genus": "Leucocytozoon",
+                     "host_species": "Coccothraustes coccothraustes", "accessions": [],
+                     "source": {"sheet": "NewLineages", "row": i + 3}}
+                    for i, n in enumerate(("COCCOC06", "COCCOC07", "COCCOC08"))]
+        screen = [{"issues": [], "sequences": [],
+                   "identical_pairs": [["COCCOC06", "COCCOC08", 479]]}]
+        html = render_report(_submission(proposed_lineages=proposed), _run(), screen=screen)
+        summary = html.split("What was submitted", 1)[1].split("<h2", 1)[0]
+        assert '<span class="taken-name">COCCOC06</span>' in summary
+        assert '<span class="taken-name">COCCOC08</span>' in summary
+        assert "Same sequence as COCCOC08" in summary
+        assert "Same sequence as COCCOC06" in summary
+        assert '<span class="taken-name">COCCOC07</span>' not in summary

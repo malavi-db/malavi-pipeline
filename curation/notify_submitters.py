@@ -20,7 +20,7 @@ What decides that a submission is ready
 Three things, all of them:
 
 1. the ledger says **approved**;
-2. the **publish hold has elapsed** (``review.publish_hold_hours``, 24 by default);
+2. the **publish hold has elapsed** (``review.publish_hold_hours``, 72 in config/project.yml);
 3. **no blocking verdict stands** — a hold recorded late in the window still wins.
 
 Why not sooner, which is the whole design question

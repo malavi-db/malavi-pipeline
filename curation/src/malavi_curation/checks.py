@@ -213,6 +213,13 @@ CHECKS: Dict[str, Check] = {c.id: c for c in [
     _check("lineage_without_sequence", "Every new lineage has a sequence",
            "Each lineage declared new is accompanied by the sequence that defines it.",
            "name", Severity.BLOCKING),
+    _check("sequences_identical_within_submission",
+           "No two proposed lineages share one sequence",
+           "Every pair of sequences submitted as new lineages differs at one or more of "
+           "the positions both cover. Two names for one sequence would put two lineage "
+           "rows with the same barcode into MalAvi, which its definition of a lineage "
+           "forbids. Blocking: there is no form in which both can be ingested.",
+           "sequence", Severity.BLOCKING),
     _check("sequence_without_declaration", "Every sequence has a declared lineage",
            "Each sequence supplied belongs to a lineage declared on NewLineages.",
            "sequence", Severity.WARNING),
@@ -234,20 +241,65 @@ CHECKS: Dict[str, Check] = {c.id: c for c in [
            "mitochondrial genome) has the window located inside it, on either strand, "
            "and is checked on that window. The name and the deposit refer to the window.",
            "name", Severity.WARNING),
+    # INFO, not WARNING, since 2026-09-23: the ingest respells the key itself at every
+    # place it stores one, so the finding tells a curator what will happen and asks
+    # nothing of them. As a warning it read as a job ("Write '...'").
     _check("reference_name_form", "Published citation keys are spelled MalAvi's way",
            "A published study is cited as '<Authors> <year>' ('Beadell et al 2009', "
            "'Hellgren 2005'), with no comma before the year and no period after 'et "
            "al', because every table joins on that string and a second spelling is a "
-           "second study.",
-           "submission", Severity.WARNING),
+           "second study. A key typed another way is respelled at ingest.",
+           "submission", Severity.INFO),
     _check("reference_already_in_malavi", "The study is already in MalAvi",
            "The cited study already has a reference row, so these records join the "
            "ones MalAvi holds for it rather than starting a new study.",
            "submission", Severity.INFO),
     _check("reference_unpubl_malformed", "Unpublished references follow the convention",
            "A reference held before publication is named '<Authors> unpubl', so that "
-           "every unpublished study in MalAvi can be found the same way.",
+           "every unpublished study in MalAvi can be found the same way. Raised only "
+           "when the name cannot be respelled automatically.",
            "submission", Severity.WARNING),
+    # -- morphospecies and the genus column (template 2026-09, 2026-09-23) -------------
+    _check("parasite_genus_carries_species", "The genus column holds a genus",
+           "NewLineages.ParasiteGenus is one of MalAvi's three parasite genera. A "
+           "species name typed there is read apart: the genus is kept and the species "
+           "name is recorded as a proposed morphospecies link, so it is not lost and "
+           "does not become a fourth value in a three-valued column.",
+           "name", Severity.INFO),
+    _check("parasite_genus_unrecognized", "The parasite genus is one MalAvi records",
+           "NewLineages.ParasiteGenus is Plasmodium, Haemoproteus or Leucocytozoon "
+           "(Parahaemoproteus is filed under Haemoproteus). Anything else is left blank "
+           "for a curator rather than written into the genus column.",
+           "name", Severity.WARNING),
+    _check("morphospecies_lineage_unknown",
+           "Morphospecies links name a lineage that exists",
+           "Each MorphoSpecies row names a lineage MalAvi holds or one this submission "
+           "declares as new; a link to a lineage nobody has is a typo until shown "
+           "otherwise.",
+           "name", Severity.WARNING),
+    _check("morphospecies_binomial_malformed",
+           "Morphospecies are written as a binomial with a MalAvi genus",
+           "Each MorphoSpecies row gives the described species as '<Genus> <epithet>' "
+           "with one of the three parasite genera, which is how the 260 rows of "
+           "morpho_species spell theirs.",
+           "name", Severity.WARNING),
+    _check("comment_mentions_morphology",
+           "Morphological information is on the sheet MalAvi can store",
+           "A record comment that speaks of a species description or a morphological "
+           "identification is pointed at the MorphoSpecies sheet. Nothing is read out "
+           "of the comment automatically; the curator decides.",
+           "name", Severity.INFO),
+    _check("reference_name_unrecognized", "The reference name is a citation key",
+           "REFERENCE_NAME is either '<Authors> <year>' for a published study or "
+           "'<Authors> unpubl' for one not yet published. A name that is neither -- a "
+           "list of full author names, a title -- cannot be filed: every record joins on "
+           "this string, and nothing downstream can tell what study it means.",
+           "submission", Severity.WARNING),
+    _check("reference_unpubl_form", "Unpublished reference names are spelled MalAvi's way",
+           "A name marked 'unpub', 'unpublished' or 'et. al., unpublished' is "
+           "recognized as an unpublished study and stored as '<Authors> unpubl' at "
+           "ingest. This says what will be stored; nothing is asked of a curator.",
+           "submission", Severity.INFO),
 
     # -- from the malaviR validators (validate_record.R) --------------------------------
     _check("host_name_resolves", "Host names resolve to avian taxonomy",
@@ -562,6 +614,7 @@ def _screen_checks(screen: Optional[Any]) -> List[CheckResult]:
                 message=issue.get("message", ""),
                 severity=_SEVERITY_FROM_LEGACY.get(issue.get("severity"), Severity.INFO),
                 source={"file": report["workbook"]} if report.get("workbook") else None,
+                evidence=dict(issue.get("evidence") or {}),
             )
             code = issue.get("code")
             if code and code in CHECKS:
@@ -613,10 +666,15 @@ _SCREEN_CHECK_IDS = frozenset({
     "name_already_in_malavi", "name_claimed_by_another_submission",
     "sequence_is_known_lineage", "sequence_identity_unresolved", "sequence_needs_reframing",
     "sequence_stop_codon", "sequence_unplaceable", "sequence_longer_than_window",
+    "sequences_identical_within_submission",
     "accession_malformed",
     "lineage_without_sequence", "sequence_without_declaration", "record_without_country",
     "record_without_prevalence", "lineage_without_host_record", "reference_missing",
-    "reference_unpubl_malformed", "reference_name_form", "reference_already_in_malavi",
+    "reference_unpubl_malformed", "reference_unpubl_form", "reference_name_form",
+    "reference_name_unrecognized", "reference_already_in_malavi",
+    "parasite_genus_carries_species", "parasite_genus_unrecognized",
+    "morphospecies_lineage_unknown", "morphospecies_binomial_malformed",
+    "comment_mentions_morphology",
 })
 
 

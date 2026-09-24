@@ -146,6 +146,49 @@ def clean_genus(value: Any) -> Optional[str]:
     return None
 
 
+# The four words that name a parasite genus in a submission, lower-cased. Used to decide
+# whether the FIRST word of a cell is a genus, which the substring test in clean_genus
+# cannot do ("Plasmodium huffi" and "huffi Plasmodium" both contain the substring).
+_GENUS_WORDS = frozenset(needle for needle, _canonical in _GENUS_CANON)
+
+# A species epithet: lower-case letters, possibly hyphenated. Deliberately strict --
+# "sp.", "n.", "nov." and an abbreviated author all fail it, which is what stops
+# "Plasmodium sp. nov." being read as the species "Plasmodium sp".
+_EPITHET = re.compile(r"^[a-z][a-z-]{2,}$")
+
+
+def parasite_binomial(value: Any) -> Optional[Tuple[str, str]]:
+    """``(genus, binomial)`` if a cell holds a parasite genus followed by a species epithet.
+
+    Submitters put a full species name in the ``ParasiteGenus`` column when the paper
+    describes one: a 2026-09 submission typed "Plasmodium huffi" and "Haemoproteus
+    (Parahaemoproteus) paraortalidum" (MALAVI-SUB-2026-000007). Until 2026-09-23 the
+    genus was read correctly and the species name was silently dropped -- and the ingest
+    wrote the whole cell into ``lineages.GENUS_NAME``, a column that holds exactly three
+    values. This reads the two parts apart so the genus goes where the genus goes and the
+    species name can be recorded as a proposed morphospecies link.
+
+    A parenthesized subgenus is removed ("(Parahaemoproteus)", "(Novyella)"): MalAvi
+    files subgenera under the genus. Returns ``None`` for a bare genus, for a genus with
+    no readable epithet ("Plasmodium sp."), and for anything not led by a recognized
+    genus. The binomial is rebuilt as ``"<Genus> <epithet>"`` in MalAvi's capitalization,
+    which is how the 260 rows of ``morpho_species`` spell theirs.
+    """
+    if not isinstance(value, str):
+        return None
+    cleaned = re.sub(r"\([^)]*\)", " ", value)          # drop a parenthesized subgenus
+    words = cleaned.replace(",", " ").split()
+    if len(words) < 2:
+        return None
+    if words[0].lower() not in _GENUS_WORDS:
+        return None
+    genus = clean_genus(words[0])
+    epithet = words[1]
+    if not genus or not _EPITHET.match(epithet):
+        return None
+    return genus, f"{genus} {epithet}"
+
+
 def clean_count(value: Any) -> Optional[float]:
     """Coerce a count cell to a whole number, or ``None`` if it is not one.
 

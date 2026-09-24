@@ -1,7 +1,7 @@
 """Refuse to build a release carrying records no curator approved.
 
 **The invariant this module exists for.** MalAvi's whole review apparatus -- the verdict
-form, the curator registry, the 24-hour publish hold, dissent outranking approval -- is
+form, the curator registry, the three-day publish hold, dissent outranking approval -- is
 worth exactly nothing if a release can be built without consulting any of it. Until this
 module existed, it could: ``build_release`` read the record store and wrote a ZIP, and
 never opened the review ledger. ``ledger.releasable()`` had no caller outside its tests.
@@ -214,7 +214,7 @@ def plan_release_transitions(entries: Dict[str, ledger.Entry],
     """Rehearse marking each submission released, and report what would refuse.
 
     **Why rehearse rather than just try.** :func:`ledger.transition` enforces rules
-    :func:`check` deliberately does not copy -- most importantly that the 24-hour publish
+    :func:`check` deliberately does not copy -- most importantly that the three-day publish
     hold has elapsed. Discovering that *after* writing a ZIP would leave a release on disk
     that the ledger refuses to record, which is the worst of both: the data is published
     and the record says it is not.

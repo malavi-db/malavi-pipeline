@@ -14,7 +14,7 @@ argument settled in a docstring but broken in code is not settled.
 **The rules that are load-bearing**, each of which exists because the alternative failed a
 specific test:
 
-* *A hold blocks.* One approval plus a 24-hour wait is enough to release — but only if a
+* *A hold blocks.* One approval plus the publish hold (three days) is enough to release — but only if a
   second curator can actually stop it. Otherwise the wait is decorative.
 * *An approval belongs to a revision; an objection belongs to the submission.* This
   asymmetry is the single most important thing in the file and it is implemented as an
@@ -362,7 +362,7 @@ def _parse(stamp: str) -> datetime:
         text = text[:-1] + "+00:00"
     parsed = datetime.fromisoformat(text)
     # A naive timestamp is treated as UTC rather than as local time: local time would make
-    # the 24-hour hold depend on which machine ran the promoter.
+    # the publish hold depend on which machine ran the promoter.
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed

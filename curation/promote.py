@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # @title Apply the review clocks and write the committed decision record
-# @purpose Run the two clocks the review ledger keeps -- the 24-hour publish hold and the
+# @purpose Run the two clocks the review ledger keeps -- the three-day publish hold and the
 #   60-day awaiting-submitter timeout -- apply what they make due, and report what needs a
 #   person.
 # @why due_actions() has always reported what is ripe and nothing ever applied it, so a

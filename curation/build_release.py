@@ -120,7 +120,7 @@ def main(argv=None) -> int:
         # record is never built. See plan_release_transitions.
         #
         # Rehearsed on a --dry-run too, and that is the point of it. The rehearsal is what
-        # checks the 24-hour publish hold and re-checks the embargoes; skipping it on a dry
+        # checks the three-day publish hold and re-checks the embargoes; skipping it on a dry
         # run meant the dry run reported a clean release for submissions the real build was
         # about to refuse. A dry run exists to be read before shipping, so it has to be
         # able to say no. It still writes nothing -- plan_release_transitions only plans.

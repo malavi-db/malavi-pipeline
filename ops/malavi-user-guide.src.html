@@ -10,7 +10,7 @@
   <h1>How MalAvi<br>works after the update</h1>
   <div class="lede">
     <p>This document describes the changes in the rebuild of MalAvi. It will show you how the rebuild works in sort of broad strokes. Briefly, there's a new static website with a submission button, curators review the submissions and can add papers themselves, approved submissions get queued up for the next build.</p>
-    <p>I also describe the other connected products, there's the new website of course, but also the R package malaviR, and there's a shinyapp BLAST tool (although I might replace that with something else in the near future).</p>
+    <p>I also describe the other connected products, there's the new website of course, but also the R package malaviR, and there's a sequence matcher on the website that replaces the shinyapp BLAST tool we were using.</p>
   </div>
 </header>
 
@@ -94,13 +94,13 @@
   <p>
     When a submission happens, the curators are emailed a report (with the data quality checks). At least one curator must read the report and record one of three answers ("Accept", "Flag", "Reject"). The rule that
     matters most is what happens when two curators disagree: an objection outranks an
-    approval. Currently, I've put a 24 hour period after one curator approves before the submission is accepted (that time window can change...probably should be bigger). During that window,
+    approval. Currently, I've put a three-day period after one curator approves before the submission is accepted (that time window can change). During that window,
     another curator can review and either accept as well or flag or reject (again the latter two choices will stop the submission going forward). Curators must discuss among each other any flagged or rejected submission before it can be resurrected and submitted again. Only one curator (currently set as V. Ellis) has the authority to override the flagged or rejected setting.
   </p>
 
   <figure>
     <svg viewBox="0 0 1140 620" role="img"
-         aria-label="A curator chooses accept, flag, or reject for a submission. A flag blocks the submission and only a lead curator can clear it. An accepted submission waits 24 hours, during which a late flag still stops it.">
+         aria-label="A curator chooses accept, flag, or reject for a submission. A flag blocks the submission and only a lead curator can clear it. An accepted submission waits three days, during which a late flag still stops it.">
       <defs>
         <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7"
                 markerHeight="7" orient="auto-start-reverse">
@@ -135,7 +135,7 @@
         <text x="614" y="146" text-anchor="middle" font-size="11" fill="var(--ok)">Accept</text>
         <rect x="668" y="76" width="232" height="80" rx="8" fill="var(--ok-wash)"
               stroke="var(--ok)"/>
-        <text x="784" y="108" text-anchor="middle" font-weight="700">Waits 24 hours</text>
+        <text x="784" y="108" text-anchor="middle" font-weight="700">Waits three days</text>
         <text x="784" y="132" text-anchor="middle" font-size="11">in case other curators want to look</text>
 
         <line x1="900" y1="116" x2="944" y2="116" stroke="var(--ok)" marker-end="url(#a2)"/>
@@ -157,7 +157,7 @@
         <path d="M784,296 L784,164" fill="none" stroke="var(--stop)" stroke-dasharray="5 4"
               marker-end="url(#a2s)"/>
         <text x="796" y="222" font-size="11" fill="var(--stop)">a flag during those</text>
-        <text x="796" y="238" font-size="11" fill="var(--stop)">24 hours from a second</text>
+        <text x="796" y="238" font-size="11" fill="var(--stop)">three days from a second</text>
         <text x="796" y="254" font-size="11" fill="var(--stop)">curator stops it</text>
 
         <!-- Lead clears -->
@@ -244,8 +244,8 @@
         <text x="990" y="156" text-anchor="middle">The new website</text>
 
         <rect x="896" y="212" width="188" height="58" rx="8" fill="none" stroke="var(--g-l)"/>
-        <text x="990" y="236" text-anchor="middle">The BLAST tool (or anything</text>
-        <text x="990" y="256" text-anchor="middle">else that needs it)</text>
+        <text x="990" y="236" text-anchor="middle">The sequence matcher</text>
+        <text x="990" y="256" text-anchor="middle">(or anything that needs it)</text>
       </g>
     </svg>
     <figcaption>

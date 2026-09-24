@@ -30,7 +30,7 @@ What a curator will actually see
 --------------------------------
 Not necessarily what just happened. The queue applies its own rule -- an approval is not
 public until the publish hold has elapsed -- so calling this immediately after an approval
-correctly publishes *no change at all*. It flips a day later, on whichever run happens
+correctly publishes *no change at all*. It flips when the hold has elapsed, on whichever run happens
 next. That is the design, not a lag: see ``build_site_feeds.public_review_state``.
 """
 from __future__ import annotations

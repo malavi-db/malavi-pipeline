@@ -87,7 +87,7 @@ place meant to survive the erasure of that data.
 Telling the submitter
 ---------------------
 This program sends nothing. ``notify_submitters.py`` finds declined submissions and sends
-the decline notice, after the same 24-hour wait an approval gets — which here does the
+the decline notice, after the same three-day wait an approval gets — which here does the
 plainer job of giving anyone a window to notice a mistake before a person is told their
 work was refused. A withdrawal sends nothing, because the submitter is the one who asked.
 """
@@ -246,7 +246,7 @@ def describe_close(action: str, before: str, names: List[str],
         lines.append("  it drops out of the public queue, which lists live submissions only")
 
     if action == "decline":
-        lines.append("  notify_submitters.py will send the decline notice once the 24-hour "
+        lines.append("  notify_submitters.py will send the decline notice once the three-day "
                      "wait has run")
     elif action == "withdraw":
         lines.append("  no message is sent; the submitter is the one who asked")

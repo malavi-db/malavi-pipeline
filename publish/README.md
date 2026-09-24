@@ -75,6 +75,7 @@ Rscript export/build_site_stats.R        # refresh the numbers the site shows
 Rscript export/build_sequence_index.R    # refresh the sequence checker's index
 Rscript export/build_site_points.R       # refresh the map page's sampling sites
 node docs/assets/js/tests/test_sequence_check.mjs   # must pass before publishing
+node docs/assets/js/tests/test_sequence_match.mjs   # must pass before publishing (~2 min)
 publish/push_site.sh
 ```
 

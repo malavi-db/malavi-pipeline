@@ -5,7 +5,7 @@ reproducibly from `build_submission_template.py`.
 
 ```bash
 .venv/bin/python curation/templates/build_submission_template.py
-# -> ImportMalavi_Template_2026-07.xlsx
+# -> ImportMalavi_Template_2026-09.xlsx
 ```
 
 ## Why a generator script instead of a checked-in binary
@@ -30,6 +30,7 @@ been filling in this workbook since 2012 and that familiarity is an asset.
 | **`JOURNAL_ID` renamed `JOURNAL_NAME`** | It always held the journal name (`Proc. R. Soc. B`), and the `_ID` suffix made it look like one of the red index columns. |
 | **Instructions embedded** as a `READ ME` sheet | They previously lived in a separate PDF that got detached as the file was forwarded around. |
 | **Per-column help** as cell comments | Hover any header for a note on what belongs in that column. |
+| **`MorphoSpecies` sheet added** (version 2026-09) | MalAvi's `morpho_species` table links a lineage to a described species with the study that made the link, and the template had no sheet for it. The first real submission (2026-09-02) put species descriptions in record comments and in the `ParasiteGenus` column instead, where they were lost. One row per lineage / species / reference. Version 2026-07 workbooks stay readable: a missing sheet reads as an empty one. |
 | **Example row inline**, gray italic, row 3 | Matches the legacy template's behavior. The validator matches it verbatim and ignores it. |
 
 ## Controlled vocabularies

@@ -13,6 +13,8 @@ means rebuilding them from nothing. A source file in git does not have that prob
 | `malavi-user-guide.src.html` | Orientation to how MalAvi works after the rebuild. Also published as the site's `how-it-works.html`. | https://claude.ai/code/artifact/4915b73f-7414-409a-802e-551ab24599b8 |
 | `curator-instructions.src.html` | What a curator is asked to do and how to do it. Also published as the site's `curating.html` — it stopped being private when `build_docs.py` started writing it there. | https://claude.ai/code/artifact/701dcd9c-2a79-4f12-b106-584a4c83b7f9 |
 | `submit.src.html` | Staffan's original submission instructions, kept as a prose source. Not a page and not built by `build_docs.py`; the paragraphs that existed nowhere else were folded into the Submit tab of `index.html` on 2026-08-14. | — |
+| `sequence-match-design.md` | Design note for the in-browser sequence match page that replaces the Shiny MalAvi BLAST app: what is reused, what the page adds, and why the ranking ended up alignment-based. | https://claude.ai/artifact/UF2BNmknHmyPhzs41mrUdG |
+| `build_sequence_match_preview.py` | Builds the self-contained review copy of the sequence match page (stylesheet, font, logo, both scripts and the whole release index inlined) so it can be reviewed as an artifact and actually searched. Output is not committed. | — |
 
 Two earlier documents, sources lost, listed so nobody redraws them by accident:
 

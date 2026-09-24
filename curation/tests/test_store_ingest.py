@@ -323,7 +323,7 @@ def test_surviving_rows_stay_where_they_were():
 # ------------------------------------------------------- the other four store tables
 
 def full_workbook(tmp_path, new_lineages=(), sequences=(), reference=(), vectors=(),
-                  alt_names=()):
+                  alt_names=(), morpho=None):
     wb = openpyxl.Workbook()
     hosts = wb.active
     hosts.title = "Hosts_and_Sites"
@@ -351,6 +351,10 @@ def full_workbook(tmp_path, new_lineages=(), sequences=(), reference=(), vectors
     sheet("Alt_Lineage_names", "Synonyms.",
           ["MalAvi_Name", "Alternative_Name", "GenBankNr", "Reference", "Comment"],
           alt_names)
+    # Template 2026-09 only; None leaves the sheet out, as every earlier workbook does.
+    if morpho is not None:
+        sheet("MorphoSpecies", "Lineages linked to described species.",
+              ["LINEAGE_NAME", "MorphoSpecies", "Reference", "Comment"], morpho)
 
     path = tmp_path / "full.xlsx"
     wb.save(path)
@@ -370,7 +374,7 @@ def test_a_new_lineage_carries_its_sequence_and_computed_length(tmp_path):
     row = tables["lineages"][0]
     assert row["SEQ_LENGTH"] == ""             # categorical, and a curator's judgment
     assert row["GENUS_NAME"] == "Haemoproteus"
-    assert row["SPECIES_NAME"] == ""           # morphospecies is a curator's judgment
+    assert row["SPECIES_NAME"] == ""           # no morphospecies link in this workbook
     assert any("SEQ_LENGTH" in note for note in notes)
 
 
@@ -466,12 +470,102 @@ def test_the_synonym_is_not_stored_the_wrong_way_round(tmp_path):
     assert row["ALT_NAME"] == "Lineage-A"
 
 
-def test_morpho_species_is_not_produced(tmp_path):
-    """The template has no sheet for it: it is a taxonomic act with its own literature."""
+# ------------------------------------------------------------ morphospecies (2026-09-23)
+#
+# Until 2026-09-23 the ingest produced no morpho_species rows at all, on the reasoning that
+# linking a lineage to a described species is a curator's act. A 2026-09-02 submission
+# (2026-09-02) linked five lineages to described species anyway -- three in record
+# comments and two typed into the ParasiteGenus column -- and the ingest would have written
+# "Plasmodium huffi" into lineages.GENUS_NAME, a column holding exactly three values, and
+# kept the species nowhere. Template 2026-09 added a MorphoSpecies sheet; the binomial in
+# the genus column is read apart as well.
+
+def test_a_workbook_without_the_sheet_links_nothing(tmp_path):
     path = full_workbook(tmp_path)
     tables, _notes = store_ingest.tables_from_workbook(
         path, "MALAVI-SUB-2026-000123", "2026-09-01", EXISTING)
-    assert "morpho_species" not in tables
+    assert tables["morpho_species"] == []
+
+
+def test_a_morphospecies_row_reaches_the_table_and_the_lineage(tmp_path):
+    path = full_workbook(
+        tmp_path,
+        new_lineages=[["TUMIG99", "PZ000001", "Haemoproteus", "", "Ellis et al., 2027", ""]],
+        sequences=[["TUMIG99", WINDOW]],
+        morpho=[["TUMIG99", "Haemoproteus minutus", "Ellis et al., 2027",
+                 "Described from blood films"]])
+    tables, notes = store_ingest.tables_from_workbook(
+        path, "MALAVI-SUB-2026-000123", "2026-09-01", EXISTING)
+    (row,) = tables["morpho_species"]
+    assert row["LINEAGE_NAME"] == "TUMIG99"
+    assert row["GENUS_NAME"] == "Haemoproteus"
+    assert row["SPECIES_NAME"] == "Haemoproteus minutus"     # the binomial, as the store spells it
+    assert row["REFERENCE_NAME"] == "Ellis et al 2027"       # MalAvi's spelling, not the typed one
+    assert row["MORPHOLOGY_COMMENT"] == "Described from blood films"
+    assert row["_source"] == "MALAVI-SUB-2026-000123"
+    # The lineage row carries the species too, which is the invariant the 242 linked
+    # lineages in the store all satisfy.
+    assert tables["lineages"][0]["SPECIES_NAME"] == "Haemoproteus minutus"
+    assert tables["lineages"][0]["GENUS_NAME"] == "Haemoproteus"
+
+
+def test_a_species_typed_in_the_genus_column_is_read_apart(tmp_path):
+    """The real case: 'Plasmodium huffi' and 'Haemoproteus (Parahaemoproteus)
+    paraortalidum' in NewLineages.ParasiteGenus (MALAVI-SUB-2026-000007)."""
+    path = full_workbook(
+        tmp_path,
+        new_lineages=[["CARCRI03", "PQ241456", "Plasmodium huffi", "", "Vieira et al 2024", ""],
+                      ["PENOBS02", "PX924991", "Haemoproteus (Parahaemoproteus) paraortalidum",
+                       "", "Vieira et al 2026c", ""]],
+        sequences=[["CARCRI03", WINDOW], ["PENOBS02", WINDOW]])
+    tables, notes = store_ingest.tables_from_workbook(
+        path, "MALAVI-SUB-2026-000123", "2026-09-01", EXISTING)
+    by_name = {row["LINEAGE_NAME"]: row for row in tables["lineages"]}
+    # The genus column gets a genus. Before the fix it got the whole cell.
+    assert by_name["CARCRI03"]["GENUS_NAME"] == "Plasmodium"
+    assert by_name["PENOBS02"]["GENUS_NAME"] == "Haemoproteus"
+    assert by_name["CARCRI03"]["SPECIES_NAME"] == "Plasmodium huffi"
+    assert by_name["PENOBS02"]["SPECIES_NAME"] == "Haemoproteus paraortalidum"
+    morpho = {row["LINEAGE_NAME"]: row for row in tables["morpho_species"]}
+    assert morpho["CARCRI03"]["SPECIES_NAME"] == "Plasmodium huffi"
+    assert morpho["CARCRI03"]["REFERENCE_NAME"] == "Vieira et al 2024"
+    # A curator reading the table later can tell a recovered link from a declared one.
+    assert "ParasiteGenus" in morpho["PENOBS02"]["MORPHOLOGY_COMMENT"]
+    assert any("Plasmodium huffi" in note and "genus column" in note for note in notes)
+
+
+def test_an_unrecognized_genus_is_left_blank_not_copied(tmp_path):
+    path = full_workbook(
+        tmp_path,
+        new_lineages=[["TUMIG99", "", "Trypanosoma", "", "Ellis 2027", ""]],
+        sequences=[["TUMIG99", WINDOW]])
+    tables, notes = store_ingest.tables_from_workbook(
+        path, "MALAVI-SUB-2026-000123", "2026-09-01", EXISTING)
+    assert tables["lineages"][0]["GENUS_NAME"] == ""
+    assert any("Trypanosoma" in note and "left blank" in note for note in notes)
+
+
+def test_a_link_to_a_lineage_malavi_already_holds_is_written_and_noted(tmp_path):
+    """CARCRI01 is a 2023 lineage; a 2026-09 study describes its species. The
+    morpho_species row is written; the existing lineage row is not edited by ingest."""
+    path = full_workbook(
+        tmp_path,
+        morpho=[["CARCRI01", "Leucocytozoon cariamae", "Vieira et al 2023", ""]])
+    tables, notes = store_ingest.tables_from_workbook(
+        path, "MALAVI-SUB-2026-000123", "2026-09-01", EXISTING)
+    assert tables["morpho_species"][0]["SPECIES_NAME"] == "Leucocytozoon cariamae"
+    assert tables["lineages"] == []
+    assert any("CARCRI01" in note and "correction" in note for note in notes)
+
+
+def test_an_unreadable_species_is_not_written_to_the_store(tmp_path):
+    """'Plasmodium sp. nov.' is not a species; the screen reports it, the store never sees it."""
+    path = full_workbook(
+        tmp_path,
+        morpho=[["SGS1", "Plasmodium sp. nov.", "Ellis 2027", ""]])
+    tables, _notes = store_ingest.tables_from_workbook(
+        path, "MALAVI-SUB-2026-000123", "2026-09-01", EXISTING)
+    assert tables["morpho_species"] == []
 
 
 # ---------------------------------------------------- duplicates within one submission

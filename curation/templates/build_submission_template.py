@@ -7,7 +7,7 @@
 #      inventing a new format. This script regenerates it reproducibly so the template is
 #      version-controlled as code instead of an opaque binary.
 # @input curation/templates/ (no data inputs; vocabularies are pinned constants below)
-# @output curation/templates/ImportMalavi_Template_2026-07.xlsx
+# @output curation/templates/ImportMalavi_Template_2026-09.xlsx
 # @program python
 # @program openpyxl
 # @critical-var TEMPLATE_VERSION
@@ -58,7 +58,9 @@ from openpyxl.worksheet.datavalidation import DataValidation
 
 # Stamped into the workbook and its filename so a returned submission can be traced back
 # to the template revision it was filled on.
-TEMPLATE_VERSION = "2026-07"
+# 2026-09: adds the MorphoSpecies sheet. Version 2026-07 workbooks stay readable -- a
+# missing sheet is an empty one -- so submitters holding the old file are not turned away.
+TEMPLATE_VERSION = "2026-09"
 
 # The malaviR release whose controlled vocabularies the dropdowns below were read from.
 # If this is bumped, re-derive the vocabularies rather than assuming they are unchanged.
@@ -254,6 +256,30 @@ SHEETS = [
         ],
     ),
     (
+        "MorphoSpecies",
+        "Use this when your study links a lineage to a morphologically described parasite "
+        "species (a new species description, or an identification of an existing one). "
+        "One row per lineage / species / reference. Leave the sheet empty if you have none. "
+        "Do NOT put the species name in the ParasiteGenus column of NewLineages.",
+        [
+            ("LINEAGE_NAME", 16, False,
+             "The lineage: new (from NewLineages) or an existing MalAvi lineage name.",
+             "SGS1"),
+            ("MorphoSpecies", 30, False,
+             "The described species as a binomial, e.g. Plasmodium relictum. Genus must "
+             "be Plasmodium, Haemoproteus or Leucocytozoon (Parahaemoproteus is filed "
+             "under Haemoproteus).",
+             "Plasmodium relictum"),
+            ("Reference", 22, False,
+             "Citation key from the Reference sheet for the study that makes the link.",
+             "Gupta et al 2019"),
+            ("Comment", 40, True,
+             "e.g. 'identification not confirmed by morphology', 'described as L. "
+             "ziemanni, a synonym'.",
+             ""),
+        ],
+    ),
+    (
         "Vectors",
         "Lineages detected in arthropod vectors. Leave the sheet empty if you have none.",
         [
@@ -328,6 +354,9 @@ def build_readme_sheet(workbook: Workbook) -> None:
          "and Vectors if you have vector data.", None),
         ("  - Fill Alt_Lineage_names if your paper calls an existing MalAvi lineage by a "
          "different name.", None),
+        ("  - Fill MorphoSpecies if your study links a lineage to a morphologically "
+         "described species (a new description or an identification). Put the species "
+         "there, not in the ParasiteGenus column.", None),
         ("  - Include a PDF of the publication if you can. It is only used to check the "
          "records against the paper, is shared with the curator alone, and is never "
          "posted anywhere.", None),
