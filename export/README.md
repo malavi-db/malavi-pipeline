@@ -17,7 +17,8 @@ from the same definition. The derived Table of Lineage Names lives there too.
 | `build_reports.R` | `malaviR` | `docs/assets/reports/*.csv` + `docs/assets/data/reports.json` |
 | `build_sequence_index.R` | `malaviR` | `docs/assets/data/lineage_sequences.json` — the sequence checker's index |
 | `build_bird_names.R` | `malaviR` (clootl snapshot) | `docs/assets/data/bird_names.json` — the checklist the name checker validates host names against |
-| `build_site_points.R` | `malaviR` | `docs/assets/data/site_points.json` — every sampling site with readable coordinates and its records, for the map page |
+| `build_site_points.R` | `malaviR` | `docs/assets/data/site_points.json` — every sampling site with readable coordinates and its records, for the map page; since 2026-09-25 each record also carries host age, residency and the range flag from `reference/host_range_lookup.csv` |
+| `build_range_lookup.R` | `malaviR`, `sf`, BirdLife BOTW 2024.2 (biostore only) | `reference/host_range_lookup.csv` — for each hatch-year, non-resident host record with coordinates, whether the site lies inside the host's breeding range. **Not one of the seven**: run only when the release or the range edition changes, on a compute node, before `build_site_points.R`. The site builds without it (hatch-year migrants then read as undetermined) |
 
 Each accepts `--dry-run`, which loads config + malaviR and prints the plan without writing.
 
@@ -34,6 +35,13 @@ Rscript export/build_reports.R          # the QC reports
 Rscript export/build_sequence_index.R   # the checker's lineage index
 Rscript export/build_site_points.R      # the map page's sampling sites
 ```
+
+`build_range_lookup.R` is the exception to "nothing depends on another script": it writes
+`reference/host_range_lookup.csv`, which `build_site_points.R` reads if present. It needs the
+licensed BirdLife range file, which exists only on biostore, so it runs there, rarely (a new
+release or a new range edition), and its CSV is committed. Reading the range file takes
+about four minutes because it has no index on species name; the script reads every species
+it needs in one query. Never on the login node.
 
 `build_bird_names.R` was missing from this list until 2026-08-14, and `build_downloads.R`
 was missing from RUNBOOK §6. Seven scripts since 2026-09-15 (`build_site_points.R`), one list; RUNBOOK §6 is the same seven.

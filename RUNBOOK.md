@@ -484,6 +484,15 @@ help but has not been told yet — and the wrong state for anyone else.
   exception in `config/project.yml`: these two are for **appointed** curators only, not for
   someone helping test the machinery.
 
+**Verify by reading the Share list, not by remembering having done it.** For each of the
+three folders, open Share and read the list of people: every active curator's address must
+be there as Viewer, *including their aliases* (a curator whose registry record carries a
+Gmail alias needs the Gmail on the list, because that is the account they will be signed in
+as when they click). Found the hard way on 2026-09-24: the lead's own udel address was
+missing from an upload folder and the "submitted files" link in a report answered "request
+access". A pending access request on a folder is a sign that this step was skipped for
+somebody; approve it as Viewer, never Editor.
+
 **4. Check they can actually answer the verdict form.** The form asks Google to verify the
 responder's address, so the address in the registry has to be one they can *sign in to
 Google with*. A personal Gmail always is. An institutional address only is if the
@@ -499,6 +508,13 @@ two ways out are:
 
 **5. Send them the guide.** `docs/curating.html` on the live site, and the example report
 PDF it links to. That page is the whole job description; there is nothing else to teach.
+
+**And warn them about spam.** The first MalAvi emails to a new address (the arrival notice
+and the report link) come from an account their mail provider has never seen, and Gmail in
+particular files them under spam. Tell every new curator, in the appointment email: *search
+your spam folder for "MalAvi" and mark the sender as safe*. This happened to a curator on
+2026-09-23; two reports sat unread in spam and the missing email was investigated as a
+pipeline fault for a day before anyone looked there.
 
 ### Afterwards: check the number of leads
 
@@ -1058,6 +1074,7 @@ Run all three suites.
 .venv/bin/python -m pytest curation -q                  # ✅ Python: the curation package
 node docs/assets/js/tests/test_sequence_check.mjs       # ✅ JS: the browser checker
 node docs/assets/js/tests/test_sequence_match.mjs       # ✅ JS: the sequence match page (~2 min)
+node docs/assets/js/tests/test_transmission.mjs         # ✅ JS: the map's transmission classes vs the exporter's counts (added 2026-09-25)
 cd /mnt/ellisbiostore/malaviR && Rscript -e 'devtools::test()'   # ✅ R: malaviR
 ```
 
@@ -1085,6 +1102,7 @@ Run after the pinned release changes. **All seven**, and `build_downloads.R` is 
 Rscript export/build_bird_names.R      # ✅ the eBird/Clements checklist the name checker uses
 Rscript export/build_site_stats.R      # ✅ every figure on the site
 Rscript export/build_sequence_index.R  # ✅ the sequence checker's index
+Rscript export/build_range_lookup.R    # biostore only, ~8 min on a compute node: the map's host-range flags (added 2026-09-25; before build_site_points.R)
 Rscript export/build_site_points.R     # ✅ the map page's sampling sites (added 2026-09-15)
 Rscript export/build_tables_json.R     # ✅ the browsable tables
 Rscript export/build_reports.R         # ✅ the QC report CSVs
@@ -1102,6 +1120,14 @@ Rscript export/build_downloads.R       # the per-table CSV/XLSX, the FASTA align
 >
 > After running it, confirm the files exist for the release you just built:
 > `ls docs/assets/downloads/tables/ | tail`.
+
+> **`build_range_lookup.R` (2026-09-25)** is not one of the seven. It reads the BirdLife
+> range polygons at `/mnt/ellisbiostore/bird_ranges/BOTW_2024_2.gpkg` (licensed; never
+> copied) and writes `reference/host_range_lookup.csv`, which `build_site_points.R` joins
+> onto the map's records. If the lookup is missing or built for another release the site
+> still builds; hatch-year birds of migratory species then read as undetermined on the map's
+> transmission view and `build_site_points.R` says so on the console. It lists any host the
+> crosswalk cannot name: add those to the sympatry project's crosswalk inputs, never guess.
 
 Two other lists of this same step exist and disagreed with each other until 2026-08-14 (all three gained `build_site_points.R` on 2026-09-15):
 `export/README.md` (which had `build_downloads.R` but not `build_bird_names.R`) and
@@ -1130,6 +1156,7 @@ snapshot bundled in malaviR. Add `--dry-run` to any of them to report without wr
 Rscript export/build_site_stats.R
 Rscript export/build_sequence_index.R
 node docs/assets/js/tests/test_sequence_check.mjs      # must pass
+node docs/assets/js/tests/test_transmission.mjs        # must pass
 node docs/assets/js/tests/test_sequence_match.mjs      # must pass (~2 min)
 publish/push_site.sh --dry-run                         # inspect first
 publish/push_site.sh

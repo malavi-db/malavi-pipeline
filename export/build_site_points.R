@@ -11,6 +11,7 @@
 #      host species and a parasite genus, see the sites -- without a server.
 # @input /mnt/ellisbiostore/malaviR (bundled release, via malaviR::extract_table)
 # @input config/project.yml
+# @input reference/host_range_lookup.csv (optional; from export/build_range_lookup.R)
 # @output docs/assets/data/site_points.json
 # @program Rscript
 # @program malaviR
@@ -25,6 +26,14 @@
 # Records whose coordinate cell cannot be read are counted and listed on the
 # console and in the file ("unparsed"), never silently dropped: a new coordinate
 # spelling in a future release should surface here, not vanish from the map.
+#
+# Transmission view (2026-09-25). Each record also carries its HOST_AGE and
+# HOST_STATUS, and a range flag from reference/host_range_lookup.csv that says
+# whether a hatch-year bird's site lies inside its species' breeding range. The
+# page turns these into three classes (local transmission / possibly acquired
+# elsewhere / undetermined); the same rule is applied here, once, so that the
+# class counts written into the payload can be checked against the page's own
+# arithmetic (docs/assets/js/tests/test_transmission.mjs).
 # =============================================================================
 
 suppressMessages({
@@ -128,8 +137,64 @@ records <- data.frame(
   ref      = text_or_blank(hosts$REFERENCE_NAME[placed]),
   found    = suppressWarnings(as.integer(hosts$NUMBER_FOUND[placed])),
   tested   = suppressWarnings(as.integer(hosts$NUMBER_TESTED[placed])),
+  age      = text_or_blank(hosts$HOST_AGE[placed]),
+  status   = text_or_blank(hosts$HOST_STATUS[placed]),
   stringsAsFactors = FALSE
 )
+
+# ---- the host-range flag for hatch-year birds ------------------------------
+# reference/host_range_lookup.csv (export/build_range_lookup.R, biostore only)
+# holds, per (host, site), whether the site lies inside the host's BirdLife
+# breeding/resident range. Codes shipped to the page:
+#   -1 not tested (no lookup row: residents, adults, hosts the crosswalk lacks)
+#    0 outside every polygon, or no polygon for the species
+#    1 inside a breeding or resident polygon only
+#    2 inside a non-breeding or passage polygon only
+#    3 inside both kinds (overlap zone), or seasonally uncertain
+RANGE_CODE <- c(outside = 0L, no_polygon = 0L, breeding_or_resident = 1L,
+                nonbreeding_or_passage = 2L, mixed = 3L, uncertain = 3L)
+lookup_path <- file.path(repo_root, "reference", "host_range_lookup.csv")
+records$range <- -1L
+range_edition <- NULL
+if (file.exists(lookup_path)) {
+  lookup <- read.csv(lookup_path, stringsAsFactors = FALSE)
+  key_rec <- paste(records$host, records$lat, records$lon, sep = "\t")
+  key_lk  <- paste(lookup$malavi_host, round(lookup$lat, 5), round(lookup$lon, 5), sep = "\t")
+  hit <- match(key_rec, key_lk)
+  code <- RANGE_CODE[lookup$verdict[hit]]
+  code[is.na(code)] <- -1L
+  # A lookup row only ever applies to the records the lookup was built for
+  # (hatch-year, not Resident); other records at the same site keep -1.
+  applies <- grepl("juvenile", records$age, ignore.case = TRUE) &
+             tolower(records$status) != "resident"
+  records$range <- ifelse(applies & !is.na(hit), as.integer(code), -1L)
+  range_edition <- unique(lookup$range_edition)[1]
+  cat(sprintf("range lookup                 %6d rows (%s); %d records flagged\n",
+              nrow(lookup), range_edition, sum(records$range >= 0)))
+  if (!identical(unique(lookup$release), release))
+    cat("  NOTE: the lookup was built for release", unique(lookup$release),
+        "and this is", release, "-- re-run export/build_range_lookup.R\n")
+} else {
+  cat("range lookup                 (none: reference/host_range_lookup.csv missing; hatch-year",
+      "birds of migratory species will all read as undetermined)\n")
+}
+
+# ---- the transmission class, as the page computes it ------------------------
+# ONE rule, mirrored in docs/assets/js/transmission.mjs. Local: the bird was
+# infected where it was sampled (a resident of any age, a nestling, or a
+# hatch-year bird inside its breeding range). Elsewhere: a migratory adult may
+# have been infected anywhere on its route. Undetermined: everything else.
+transmission_class <- function(age, status, range) {
+  a <- tolower(age); s <- tolower(status)
+  ifelse(s == "resident", "local",
+  ifelse(grepl("nestling", a, fixed = TRUE), "local",
+  ifelse(grepl("juvenile", a, fixed = TRUE) & range == 1L, "local",
+  ifelse(a == "adult" & s == "migratory", "elsewhere", "undetermined"))))
+}
+records$class <- transmission_class(records$age, records$status, records$range)
+class_counts <- as.list(table(factor(records$class, c("local", "elsewhere", "undetermined"))))
+cat(sprintf("transmission classes         local %d, elsewhere %d, undetermined %d\n",
+            class_counts$local, class_counts$elsewhere, class_counts$undetermined))
 
 # String tables, so each record is a short array of indexes rather than five
 # repeated strings; the page rebuilds the rows from these. Zero-based for JS.
@@ -138,11 +203,15 @@ genera     <- unique(c(cfg_genera <- c("Plasmodium", "Haemoproteus", "Leucocytoz
 hosts_tbl  <- sort(unique(records$host))
 refs_tbl   <- sort(unique(records$ref))
 lineages   <- sort(unique(records$lineage))
+ages       <- sort(unique(records$age))
+statuses   <- sort(unique(records$status))
 
 records$g <- match(records$genus, genera) - 1L
 records$h <- match(records$host, hosts_tbl) - 1L
 records$r <- match(records$ref, refs_tbl) - 1L
 records$l <- match(records$lineage, lineages) - 1L
+records$a <- match(records$age, ages) - 1L
+records$s <- match(records$status, statuses) - 1L
 records$g[is.na(records$g)] <- -1L
 
 site_key <- paste(records$lat, records$lon, records$site, records$country, sep = "\t")
@@ -154,9 +223,11 @@ for (i in seq_len(n_sites)) {
   rows <- which(site_ids == i)
   first <- rows[1]
   recs <- lapply(rows, function(j) {
+    # [lineage, genus, host, reference, found, tested, age, status, range]
     list(records$l[j], records$g[j], records$h[j], records$r[j],
          if (is.na(records$found[j])) NULL else records$found[j],
-         if (is.na(records$tested[j])) NULL else records$tested[j])
+         if (is.na(records$tested[j])) NULL else records$tested[j],
+         records$a[j], records$s[j], records$range[j])
   })
   sites[[i]] <- list(
     la = records$lat[first], lo = records$lon[first],
@@ -181,6 +252,14 @@ payload <- list(
   hosts     = as.list(hosts_tbl),
   references = as.list(refs_tbl),
   lineages  = as.list(lineages),
+  ages      = as.list(ages),
+  statuses  = as.list(statuses),
+  # The transmission view's inputs and the counts the page must reproduce.
+  transmission = list(
+    range_edition  = if (is.null(range_edition)) NULL else range_edition,
+    n_range_tested = sum(records$range >= 0),
+    counts         = class_counts
+  ),
   sites     = sites
 )
 

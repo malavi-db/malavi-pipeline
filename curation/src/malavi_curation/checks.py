@@ -229,6 +229,19 @@ CHECKS: Dict[str, Check] = {c.id: c for c in [
     _check("record_without_prevalence", "Records report prevalence",
            "Each host record reports how many birds were screened and infected.",
            "record", Severity.INFO),
+    _check("site_coordinates_unreadable", "Site coordinates can be read",
+           "Each site's LATITUDE and LONGITUDE parse as degrees and decimal minutes "
+           "or as decimal degrees, with a sign or a hemisphere letter.",
+           "record", Severity.WARNING),
+    _check("site_outside_country", "Site coordinates fall in the named country",
+           "Each site's coordinates lie inside, or within 10 km of, the country the "
+           "submitter named (Natural Earth 1:10m polygons). A point far outside is "
+           "usually a dropped minus sign or swapped latitude and longitude.",
+           "record", Severity.WARNING),
+    _check("site_country_not_in_atlas", "Site country is in the atlas",
+           "The named country is one the coordinate check can test against; if not, "
+           "the coordinates were not tested.",
+           "record", Severity.INFO),
     _check("lineage_without_host_record", "New lineages have a host record",
            "Each newly declared lineage appears in at least one host record.",
            "name", Severity.WARNING),
@@ -670,6 +683,7 @@ _SCREEN_CHECK_IDS = frozenset({
     "accession_malformed",
     "lineage_without_sequence", "sequence_without_declaration", "record_without_country",
     "record_without_prevalence", "lineage_without_host_record", "reference_missing",
+    "site_coordinates_unreadable", "site_outside_country", "site_country_not_in_atlas",
     "reference_unpubl_malformed", "reference_unpubl_form", "reference_name_form",
     "reference_name_unrecognized", "reference_already_in_malavi",
     "parasite_genus_carries_species", "parasite_genus_unrecognized",

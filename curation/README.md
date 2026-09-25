@@ -42,6 +42,8 @@ Python does the parsing; R (via `malaviR`) does the validation. Nothing here is 
 | `r/validate_record.R` | reconcile host names (`match_taxonomy`) + run host_geo_flag | **implemented** |
 | `r/host_geo_flag.R` | improbable host/locality flag → upstream to malaviR | **implemented** |
 | `src/malavi_curation/validate.py` | Python→R bridge; folds flags into the report | **implemented** |
+| `src/malavi_curation/site_coordinates.py` | Sites sheet: parse LATITUDE/LONGITUDE, test the point against the named country's Natural Earth polygon (`reference/natural_earth/`); the screen's `site_outside_country` | **implemented + tested** (2026-09-25) |
+| `audit_site_coordinates.py` | the same check over the whole pinned release; prints the sites outside their recorded country (maintainer tool; findings go to the local DATA_ISSUES notes) | **implemented** (2026-09-25) |
 | `r/benchmark_truth.R` | emit MalAvi ground truth per reference (JSON) | **implemented** |
 | `r/gazetteer.R` | emit malaviR genera/binomials/countries → `data/gazetteer.json` | **implemented** |
 | `benchmark/run_benchmark.py` | score extraction vs. truth | **implemented** |

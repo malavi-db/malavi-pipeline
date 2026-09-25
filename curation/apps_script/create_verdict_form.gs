@@ -204,9 +204,14 @@ function buildVerdictPage(form) {
       .setTitle('Your verdict on this revision')
       .setHelpText(
           'Accept — this can go into a release.\n' +
-          'Flag for further review — something needs resolving first. This BLOCKS the ' +
-          'submission until you withdraw it or a lead curator clears it.\n' +
-          'Reject — this should not go into MalAvi.')
+          'Flag for further review — something needs work: the submitter or a curator ' +
+          'can fix it (a duplicate name, a chromatogram to re-read, a wrong host). This ' +
+          'BLOCKS the submission until you withdraw the flag or a lead curator clears ' +
+          'it, and the submission keeps its id and its reserved lineage names. Use Flag ' +
+          'for anything that could be corrected; then someone emails the submitter.\n' +
+          'Reject — this should not enter MalAvi at all. Nothing is sent to the ' +
+          'submitter automatically, and when a lead later closes the submission, the ' +
+          'notice carries no reason and the reserved names are given back to the pool.')
       .setChoiceValues([VERDICT_APPROVE, VERDICT_HOLD, VERDICT_DECLINE])
       .setRequired(true);
 

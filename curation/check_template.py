@@ -58,11 +58,12 @@ from malavi_curation import normalize                              # noqa: E402
 from malavi_curation import reference_names                        # noqa: E402
 from malavi_curation.submission_id import submission_id_for        # noqa: E402
 from malavi_curation.naming import suggest_name                    # noqa: E402
+from malavi_curation import site_coordinates                       # noqa: E402
 from malavi_curation.report_html import (                          # noqa: E402
     render_paper_only_report, render_report, write_pdf, write_report,
 )
 from malavi_curation.template_adapter import (                     # noqa: E402
-    SHEET_HOSTS, SHEET_MORPHO, SHEET_NEWLINEAGES, SHEET_REFERENCE, SHEET_SEQUENCES,
+    SHEET_HOSTS, SHEET_MORPHO, SHEET_NEWLINEAGES, SHEET_REFERENCE, SHEET_SEQUENCES, SHEET_SITES,
     build_submission_from_path, cell as _cell, sheet_rows,
 )
 
@@ -372,6 +373,58 @@ def screen(workbook: Path, ref: Reference, known_lineages: Optional[set],
             if name not in used:
                 issue("warn", "lineage_without_host_record",
                       f"{name} is a new lineage with no row in {SHEET_HOSTS}.", name)
+
+    # ---- sites: do the coordinates fall in the named country? ---------------
+    # Two release sites sit in the sea because a longitude lost its minus sign
+    # (2026-09-25). Each Sites row with both halves is parsed and tested against the
+    # Natural Earth polygon of its Country (malavi_curation.site_coordinates). Inside,
+    # or within TOLERANCE_KM of the boundary, is silent; further out is a warning that
+    # says how far, where the point actually is, and which single sign flip would fix
+    # it. A country the atlas cannot name is reported as untested, never guessed.
+    if SHEET_SITES in wb.sheetnames:
+        hdr, body = _header_and_body(wb[SHEET_SITES], "SITE_NAME")
+        n_sites = 0
+        for r in body:
+            site_name = _cell(hdr, r, "SITE_NAME")
+            lat_text, lon_text = _cell(hdr, r, "LATITUDE"), _cell(hdr, r, "LONGITUDE")
+            country = _cell(hdr, r, "Country")
+            if not site_name or not (lat_text or lon_text):
+                continue
+            n_sites += 1
+            lat = site_coordinates.parse_coordinate(lat_text, is_latitude=True)
+            lon = site_coordinates.parse_coordinate(lon_text, is_latitude=False)
+            if lat is None or lon is None:
+                bad = []
+                if lat is None:
+                    bad.append(f"latitude {lat_text!r}")
+                if lon is None:
+                    bad.append(f"longitude {lon_text!r}")
+                issue("warn", "site_coordinates_unreadable",
+                      f"{site_name}: could not read {' and '.join(bad)} (expected degrees "
+                      f"and decimal minutes such as 11°28.20000', or decimal degrees).",
+                      site_name, evidence={"site": site_name, "latitude": lat_text or "",
+                                           "longitude": lon_text or ""})
+                continue
+            if not country:
+                continue           # record_without_country covers the missing country
+            result = site_coordinates.check_site(country, lat, lon)
+            if result.verdict == "country_unknown":
+                issue("info", "site_country_not_in_atlas",
+                      f"{site_name}: the country {country!r} is not in the atlas the "
+                      f"coordinate check uses, so its coordinates were not tested.",
+                      site_name, evidence={"site": site_name, "country": country})
+            elif result.verdict == "outside":
+                where = (f"inside {result.found_in}" if result.found_in else "in open water")
+                fix = f" Try this: {result.fix}." if result.fix else ""
+                issue("warn", "site_outside_country",
+                      f"{site_name}: {lat:.4f}, {lon:.4f} lies {result.distance_km:.0f} km "
+                      f"outside {country} ({where}).{fix}",
+                      site_name, evidence={"site": site_name, "country": country,
+                                           "latitude": f"{lat:.5f}", "longitude": f"{lon:.5f}",
+                                           "distance_km": f"{result.distance_km:.1f}",
+                                           "found_in": result.found_in or "open water",
+                                           "suggested_fix": result.fix or ""})
+        out["n_sites"] = n_sites
 
     # ---- morphospecies links --------------------------------------------
     # Template 2026-09. Each row says "this study links lineage X to described species

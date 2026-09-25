@@ -82,6 +82,8 @@ def _workbook(tmp_path, name="ImportMalavi.xlsx", **overrides):
     if overrides.get("morpho") is not None:       # template 2026-09 only
         _sheet(workbook, "MorphoSpecies", CANONICAL_HEADERS["MorphoSpecies"],
                overrides["morpho"])
+    if overrides.get("sites") is not None:
+        _sheet(workbook, "Sites", CANONICAL_HEADERS["Sites"], overrides["sites"])
     path = tmp_path / name
     workbook.save(path)
     return path
@@ -236,6 +238,50 @@ class TestFreeNameSuggestions:
              None, None, "Lund", 3, 25, "Ellis et al 2026", None]])
         report = check_template.screen(path, reference, known_lineages=set())
         assert "record_without_country" in _codes(report)
+
+    def test_a_site_outside_its_country_is_reported_with_the_fix(self, check_template,
+                                                                 reference, tmp_path):
+        # Lincoln, UK with the longitude's minus sign dropped: the real release fault.
+        path = _workbook(tmp_path, sites=[
+            ["Lincoln", "United Kingdom", "53°15.00000'", "000°34.00000'", None]])
+        report = check_template.screen(path, reference, known_lineages=set())
+        found = [i for i in report["issues"] if i["code"] == "site_outside_country"]
+        assert len(found) == 1
+        assert found[0]["subject"] == "Lincoln"
+        assert found[0]["evidence"]["suggested_fix"] == "negate the longitude"
+        assert "negate the longitude" in found[0]["message"]
+        assert report["n_sites"] == 1
+
+    def test_a_site_inside_its_country_raises_nothing(self, check_template, reference, tmp_path):
+        path = _workbook(tmp_path, sites=[
+            ["Lund", "Sweden", "55°42.00000'", "013°12.00000'", None],
+            ["Malmö harbour", "Sweden", "55°21.00000'", "012°54.00000'", None]])   # 5 km out
+        report = check_template.screen(path, reference, known_lineages=set())
+        assert not {"site_outside_country", "site_coordinates_unreadable",
+                    "site_country_not_in_atlas"} & _codes(report)
+        assert report["n_sites"] == 2
+
+    def test_unreadable_coordinates_are_reported_not_skipped(self, check_template,
+                                                             reference, tmp_path):
+        path = _workbook(tmp_path, sites=[
+            ["Somewhere", "Sweden", "north of town", "013°12.00000'", None]])
+        report = check_template.screen(path, reference, known_lineages=set())
+        found = [i for i in report["issues"] if i["code"] == "site_coordinates_unreadable"]
+        assert len(found) == 1 and "latitude" in found[0]["message"]
+
+    def test_a_country_the_atlas_lacks_is_declared_untested(self, check_template,
+                                                            reference, tmp_path):
+        path = _workbook(tmp_path, sites=[
+            ["Curaçao", "Netherlands Antilles", "12°06.00000'", "-068°54.00000'", None]])
+        report = check_template.screen(path, reference, known_lineages=set())
+        assert "site_country_not_in_atlas" in _codes(report)
+        assert "site_outside_country" not in _codes(report)
+
+    def test_a_site_row_without_coordinates_is_not_a_site_finding(self, check_template,
+                                                                  reference, tmp_path):
+        path = _workbook(tmp_path, sites=[["Lund", "Sweden", None, None, None]])
+        report = check_template.screen(path, reference, known_lineages=set())
+        assert not {"site_outside_country", "site_coordinates_unreadable"} & _codes(report)
 
     def test_a_missing_reference_row_is_blocking(self, check_template, reference, tmp_path):
         path = _workbook(tmp_path, reference=[])
