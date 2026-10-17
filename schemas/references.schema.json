@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "malavi/references.schema.json",
+  "title": "MalAvi Table of References record",
+  "description": "Bibliographic entry cited across the database. Six columns are authoritative as of malaviR release 2026-03-23; DOI is an optional forward-looking column MalAvi does not yet populate (added by the curation pipeline for new papers, back-fillable for old ones).",
+  "type": "object",
+  "properties": {
+    "REFERENCE_NAME":   { "type": "string", "description": "Citation key (e.g. 'Bensch et al 2009'). Joins to host/vector/morpho tables." },
+    "PUBLICATION_YEAR": { "type": ["number", "null"], "description": "Year of publication." },
+    "TITLE":            { "type": ["string", "null"], "description": "Article title." },
+    "JOURNAL_NAME":     { "type": ["string", "null"], "description": "Journal name." },
+    "VOLUME_PAGES":     { "type": ["string", "null"], "description": "Volume and page range." },
+    "STUDY_TYPE":       { "type": ["string", "null"], "description": "Study type classification." },
+    "DOI":              { "type": ["string", "null"], "description": "Digital Object Identifier (bare, e.g. '10.1111/mec.12345'), if known. Optional and not in the bundled malaviR release; captured going forward from the curation pipeline (submission.reference.doi) and usable as an exact de-dup key by the publication watcher." }
+  },
+  "required": ["REFERENCE_NAME"],
+  "additionalProperties": false
+}

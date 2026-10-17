@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# @title Pre-push hook for the malaviR working copy: refuse to push anything private
+# @purpose Run curation/privacy_scan.py over the tracked files of the malaviR package
+#   before every push to its PUBLIC GitHub remote; a hit stops the push.
+# @why malaviR is the one public destination pushed by hand with no script in front of
+#   it (results/GUARDRAILS_PLAN_2026-10-16.md, section 2.2). DATA_ISSUES.md is kept out by
+#   .gitignore; this is the check for everything nobody thought to list.
+# @input the tracked files of the repository the hook is installed in
+# @program git
+# @program python3
+# @critical-flag privacy_scan.py "" --destination
+#
+# Installed by publish/install_hooks.sh (hooks are not tracked by git). To push with the
+# scan deliberately skipped: SKIP_PRIVACY_SCAN=1 git push.
+set -euo pipefail
+
+MALAVI_REBUILD="${MALAVI_REBUILD:-/mnt/biostore-all/Vellis/malavi_rebuild}"
+PYTHON="${MALAVI_REBUILD}/.venv/bin/python"
+SCANNER="${MALAVI_REBUILD}/curation/privacy_scan.py"
+
+if [[ "${SKIP_PRIVACY_SCAN:-}" == "1" ]]; then
+  echo "pre-push: privacy scan SKIPPED (SKIP_PRIVACY_SCAN=1)" >&2
+  exit 0
+fi
+if [[ ! -x "${PYTHON}" || ! -f "${SCANNER}" ]]; then
+  echo "pre-push: the privacy scanner is not reachable at ${SCANNER}; refusing to push." >&2
+  echo "          Set MALAVI_REBUILD to the malavi_rebuild checkout, or SKIP_PRIVACY_SCAN=1." >&2
+  exit 1
+fi
+
+STAGE="$(mktemp -d)"
+trap 'rm -rf "${STAGE}"' EXIT
+# The tracked files only, as git would push them.
+git ls-files -z | while IFS= read -r -d '' file; do
+  mkdir -p "${STAGE}/$(dirname "${file}")"
+  cp "${file}" "${STAGE}/${file}"
+done
+echo "pre-push: privacy scan of the malaviR tree" >&2
+(cd "${MALAVI_REBUILD}" && "${PYTHON}" "${SCANNER}" --destination malaviR --base "${STAGE}" "${STAGE}") >&2

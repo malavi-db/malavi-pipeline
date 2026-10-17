@@ -1,0 +1,77 @@
+# export/
+
+R scripts that turn the `malaviR` package data into the files the website serves. These
+are **thin shims** over `malaviR` — no re-derivation of the data, just serialization.
+
+All six tables come from one shared accessor, `export/lib/tables.R`, so the row count the
+site advertises, the table a visitor browses, and the file they download are all built
+from the same definition. The derived Table of Lineage Names lives there too.
+
+## Live scripts
+
+| Script | Reads | Writes |
+| --- | --- | --- |
+| `build_site_stats.R` | `malaviR` | `docs/assets/data/site_stats.json` — every figure on the site |
+| `build_tables_json.R` | `malaviR` | `docs/assets/data/tables/<id>.json` (all rows) + `tables_index.json` (column specs) |
+| `build_downloads.R` | `malaviR` | `docs/assets/downloads/` — per-table CSV/XLSX, the FASTA alignment, the everything ZIP |
+| `build_reports.R` | `malaviR` | `docs/assets/reports/*.csv` + `docs/assets/data/reports.json` |
+| `build_sequence_index.R` | `malaviR` | `docs/assets/data/lineage_sequences.json` — the sequence checker's index |
+| `build_bird_names.R` | `malaviR` (clootl snapshot) | `docs/assets/data/bird_names.json` — the checklist the name checker validates host names against |
+| `build_site_points.R` | `malaviR` | `docs/assets/data/site_points.json` — every sampling site with readable coordinates and its records, for the map page; since 2026-09-25 each record also carries host age, residency and the range flag from `reference/host_range_lookup.csv` |
+| `build_range_lookup.R` | `malaviR`, `sf`, BirdLife BOTW 2024.2 (biostore only) | `reference/host_range_lookup.csv` — for each hatch-year, non-resident host record with coordinates, whether the site lies inside the host's breeding range. **Not one of the seven**: run only when the release or the range edition changes, on a compute node, before `build_site_points.R`. The site builds without it (hatch-year migrants then read as undetermined) |
+| `build_land_layer.py` | Python 3, `reference/natural_earth/ne_10m_admin_0_countries_simplified.geojson.gz` | `docs/assets/data/world_land.json` — the interactive map's land: the outer ring of every country polygon in Natural Earth 1:10m, simplified at 0.02° and never dropped for being small, so island groups absent at 1:110m (the Lesser Antilles, the Canaries, Hawaii) are drawn. **Not one of the seven** and independent of the release: run only if the source layer changes |
+
+Each accepts `--dry-run`, which loads config + malaviR and prints the plan without writing.
+
+## Run order
+
+Nothing here depends on another script's output, so the order is only a convention:
+
+```bash
+Rscript export/build_bird_names.R       # the eBird/Clements checklist the name checker uses
+Rscript export/build_site_stats.R       # figures + table row counts
+Rscript export/build_tables_json.R      # the browsable tables
+Rscript export/build_downloads.R        # the download files
+Rscript export/build_reports.R          # the QC reports
+Rscript export/build_sequence_index.R   # the checker's lineage index
+Rscript export/build_site_points.R      # the map page's sampling sites
+```
+
+`build_range_lookup.R` is the exception to "nothing depends on another script": it writes
+`reference/host_range_lookup.csv`, which `build_site_points.R` reads if present. It needs the
+licensed BirdLife range file, which exists only on biostore, so it runs there, rarely (a new
+release or a new range edition), and its CSV is committed. Reading the range file takes
+about four minutes because it has no index on species name; the script reads every species
+it needs in one query. Never on the login node.
+
+`build_bird_names.R` was missing from this list until 2026-08-14, and `build_downloads.R`
+was missing from RUNBOOK §6. Seven scripts since 2026-09-15 (`build_site_points.R`), one list; RUNBOOK §6 is the same seven.
+
+Re-run **all** of them after bumping `malaviR.release` in `config/project.yml`, then
+publish with `publish/push_site.sh`. `build_site_stats.R` and `build_tables_json.R` in
+particular must agree: the site takes its row counts from the first and its rows from the
+second, and a stale pair would advertise a count the table does not contain.
+
+## Two scripts that used to be here
+
+`export_tables.R` and `build_datatables_json.R` were **deleted on 2026-08-14**, noted here
+because both are named in older documents and in two comments in `watcher/`.
+
+They were Phase 1 scaffolding whose writing bodies were never finished — stubbed `stop(...)`,
+so only `--dry-run` did anything. They targeted the pre-redesign `docs/tables.html`, deleted
+2026-08-13. `build_tables_json.R` superseded `build_datatables_json.R`, and the CSV/FASTA
+output `export_tables.R` was meant to produce is covered by `build_downloads.R`.
+
+They are also the reason the project notes said "the export pipeline is still a stub", which
+was never true of the pipeline that actually runs: the live scripts above all work and were
+verified byte-identical against the live site on 2026-08-08. Two dead files were making six
+working ones look unfinished.
+
+## Requirements
+
+- R packages: `malaviR` (+ `ape` for FASTA, `openxlsx` for XLSX), `yaml`, `jsonlite`.
+- The release is pinned in `config/project.yml` (`malaviR.release`). Keep it in sync with
+  the installed `malaviR` (`malaviR::malavi_version()`).
+
+> **HPC note:** these are light (load bundled data, serialize) and are safe to run on a
+> compute node inside a Slurm allocation. Do not run heavy work on the login node.

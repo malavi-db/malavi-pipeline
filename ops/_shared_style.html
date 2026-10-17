@@ -1,0 +1,120 @@
+<style>
+/* ==== STANDALONE-ONLY ==== tokens, font and page ground.
+   The site page does not use this block: docs/assets/css/malavi.css already
+   defines these same token names, and defining them twice would let the two
+   drift apart silently. Everything below the GUIDE marker is shared. */
+/* @font-face — League Gothic, recovered from the original MalAvi site's own web
+   directory. The typeface MalAvi wore for fifteen years. SIL OFL. */
+@font-face{
+  font-family:"League Gothic";
+  src:url(data:font/woff;base64,__LEAGUE_GOTHIC__) format("woff");
+  font-weight:400; font-style:normal; font-display:block;
+}
+:root{
+  --paper:#F4F3F8; --surface:#FFFFFF; --surface-2:#ECEAF3; --surface-3:#E2DFEC;
+  --ink:#17141F; --ink-2:#443E55; --ink-3:#6E677F;
+  --rule:#D8D4E4; --rule-soft:#E6E3EE;
+  --accent:#5B4BA6; --accent-ink:#FFFFFF; --accent-wash:#EDEAF8;
+  --g-p:#D55E00; --g-h:#0072B2; --g-l:#009E73;
+  --ok:#1F7A4D; --warn:#9A6410; --stop:#A63A3A;
+  --ok-wash:#E4F2EA; --warn-wash:#F7EEDC; --stop-wash:#F7E7E7;
+  --shadow:0 1px 2px rgba(23,20,31,.05), 0 8px 24px -12px rgba(23,20,31,.18);
+  --radius:10px;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --paper:#17141F; --surface:#201C2B; --surface-2:#2A2537; --surface-3:#332C42;
+    --ink:#ECEAF4; --ink-2:#B4AECA; --ink-3:#8B8499;
+    --rule:#362F47; --rule-soft:#2B2539;
+    --accent:#A99CF0; --accent-ink:#17141F; --accent-wash:#292244;
+    --g-p:#DB6A16; --g-h:#3B82D0; --g-l:#17A06F;
+    --ok:#5FC08C; --warn:#DCA84A; --stop:#E38080;
+    --ok-wash:#1C3129; --warn-wash:#332A18; --stop-wash:#35211F;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="light"]{
+  --paper:#F4F3F8; --surface:#FFFFFF; --ink:#17141F; --ink-2:#443E55; --ink-3:#6E677F;
+  --rule:#D8D4E4; --rule-soft:#E6E3EE; --accent:#5B4BA6; --accent-wash:#EDEAF8;
+  --g-p:#D55E00; --g-h:#0072B2; --g-l:#009E73;
+  --ok:#1F7A4D; --stop:#A63A3A; --warn:#9A6410;
+  --ok-wash:#E4F2EA; --warn-wash:#F7EEDC; --stop-wash:#F7E7E7;
+}
+:root[data-theme="dark"]{
+  --paper:#17141F; --surface:#201C2B; --ink:#ECEAF4; --ink-2:#B4AECA; --ink-3:#8B8499;
+  --rule:#362F47; --rule-soft:#2B2539; --accent:#A99CF0; --accent-wash:#292244;
+  --g-p:#DB6A16; --g-h:#3B82D0; --g-l:#17A06F;
+  --ok:#5FC08C; --stop:#E38080; --warn:#DCA84A;
+  --ok-wash:#1C3129; --warn-wash:#332A18; --stop-wash:#35211F;
+}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+/* ==== GUIDE ==== shared by both outputs.
+   Every rule is scoped under .guide, because the site stylesheet already owns
+   .card, .eyebrow and .pill with different values and an unscoped rule here
+   would quietly fight it. */
+.guide{max-width:1000px; margin:0 auto; padding:0 24px 96px; --measure:66ch}
+.guide *{box-sizing:border-box}
+.guide h1,.guide h2,.guide h3{
+  font-family:"League Gothic",Impact,"Haettenschweiler",sans-serif;
+  font-weight:400; text-transform:uppercase; letter-spacing:.01em;
+  text-wrap:balance; margin:0}
+.guide h1{font-size:clamp(52px,9vw,104px); line-height:.92}
+.guide h2{font-size:clamp(30px,4.4vw,46px); line-height:1}
+.guide h3{font-size:22px; line-height:1.15}
+.guide p{max-width:var(--measure)}
+.guide a{color:var(--accent)}
+.guide .eyebrow{font-size:12px; letter-spacing:.13em; text-transform:uppercase;
+  color:var(--ink-3); font-weight:600; margin:0 0 10px}
+.guide header.hero{padding:56px 0 40px; border-bottom:1px solid var(--rule)}
+.guide header.hero .lede{margin-top:22px; display:flex; flex-direction:column; gap:14px}
+.guide header.hero .lede p{font-size:19px; line-height:1.55; color:var(--ink-2); margin:0}
+.guide section{padding:56px 0; border-bottom:1px solid var(--rule-soft)}
+.guide section:last-of-type{border-bottom:0}
+.guide .sec-head{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;
+  margin-bottom:8px}
+.guide figure{margin:32px 0 0; background:var(--surface); border:1px solid var(--rule);
+  border-radius:var(--radius); padding:24px; box-shadow:var(--shadow); overflow-x:auto}
+.guide figure svg{display:block; max-width:100%; height:auto; margin:0 auto;
+  color:var(--ink-2)}
+.guide figcaption{margin-top:18px; font-size:14px; line-height:1.55; color:var(--ink-3);
+  max-width:var(--measure)}
+.guide .grid{display:grid; gap:16px; margin-top:28px}
+@media(min-width:720px){ .guide .grid.four{grid-template-columns:repeat(2,1fr)} }
+@media(min-width:960px){ .guide .grid.four{grid-template-columns:repeat(4,1fr)} }
+.guide .card{background:var(--surface); border:1px solid var(--rule);
+  border-radius:var(--radius); padding:20px 22px}
+.guide .card h3{margin-bottom:8px}
+.guide .card p{font-size:15px; color:var(--ink-2); margin:0}
+.guide .card .needs{margin-top:14px; padding-top:12px; border-top:1px solid var(--rule-soft);
+  font-size:13px; color:var(--ink-3)}
+.guide .pill{display:inline-flex; align-items:center; gap:6px; font-size:11px;
+  font-weight:700; letter-spacing:.08em; text-transform:uppercase; padding:3px 9px;
+  border-radius:999px; white-space:nowrap}
+.guide .pill.live{background:var(--ok-wash); color:var(--ok)}
+.guide .pill.soon{background:var(--warn-wash); color:var(--warn)}
+.guide .note{margin-top:28px; border-left:3px solid var(--accent);
+  background:var(--accent-wash); padding:18px 22px;
+  border-radius:0 var(--radius) var(--radius) 0}
+.guide .note p{margin:0; color:var(--ink-2)}
+.guide .note strong{color:var(--ink)}
+.guide footer{padding:48px 0 0; color:var(--ink-3); font-size:14px}
+/* Download rows. Copied from the site's .files rules rather than inherited, because
+   the standalone artifact copy has no access to assets/css/malavi.css -- without
+   these the three spans of a file row run together as unstyled text there while
+   looking correct on the site, which is the kind of difference nobody sees until
+   somebody opens the artifact. Kept scoped under .guide like everything else here,
+   so on the site page the site's own rules still win for the rest of the page. */
+.guide .files{display:grid; gap:1px; background:var(--rule-soft);
+  border:1px solid var(--rule); border-radius:var(--radius); overflow:hidden}
+.guide .files a{display:flex; gap:14px; align-items:center; flex-wrap:wrap;
+  background:var(--surface); padding:13px 17px; text-decoration:none; color:inherit}
+.guide .files a:hover{background:var(--surface-2)}
+.guide .files .nm{font-weight:600; font-size:14.5px; min-width:180px}
+.guide .files .ds{font-size:13px; color:var(--ink-3); flex:1}
+.guide .files .fm{font-size:10.5px; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--ink-3); border:1px solid var(--rule); border-radius:4px; padding:2px 7px}
+</style>

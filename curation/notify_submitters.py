@@ -1,0 +1,484 @@
+#!/usr/bin/env python3
+# @title Tell submitters what a curator decided about their submission
+# @purpose Find submissions a curator has settled -- approved or declined -- whose hold has
+#   elapsed, email the submitter the outcome, and record that it was sent.
+# @why The site tells every visitor that a curator will confirm their proposed name before
+#   they deposit in GenBank. Until now that email existed only if a person remembered to
+#   write it, and a submitter who gives up waiting deposits the wrong name.
+# @input curation/intake/submissions/review_ledger.json
+# @input curation/intake/submissions/<id>/submission.json (the submitter's address)
+# @output an email to the submitter, via the Apps Script endpoint
+# @output a name_confirmation_sent entry in the submission's ledger history
+# @program python3
+# @critical-var CONFIRMATION_EVENT
+# @critical-var DECLINE_EVENT
+# @critical-flag notify_submitters.py "" --dry-run
+# @critical-flag notify_submitters.py "" --allow-bulk
+# @critical-flag notify_submitters.py "" --standalone
+"""Tell a submitter what happened to their submission.
+
+What decides that a submission is ready
+---------------------------------------
+Three things, all of them:
+
+1. the ledger says **approved**;
+2. the **publish hold has elapsed** (``review.publish_hold_hours``, 72 in config/project.yml);
+3. **no blocking verdict stands** — a hold recorded late in the window still wins.
+
+Why not sooner, which is the whole design question
+--------------------------------------------------
+Screening cannot send it. A proposed name is derived from the host species, and the host
+species is the single thing curators most often correct; a name confirmed by machine could
+be withdrawn by a person the next day.
+
+Approval alone cannot send it either, and this is the less obvious half. The publish hold
+exists so that a second curator can still object *after* an approval. A confirmation posted
+into that window can be contradicted — and by then the submitter may have put the name in a
+manuscript. A slow email is recoverable. A retracted lineage name is not.
+
+So the trigger is the same moment the submission becomes genuinely settled, which is the
+moment ``promote.py`` would call it release-eligible.
+
+Sent once, and only once
+------------------------
+Every send writes a ``name_confirmation_sent`` event into the submission's ledger history,
+and a submission carrying one is skipped forever after. Re-sending would be worse than it
+sounds: a second "your names are confirmed" invites the reader to wonder which message was
+right, and to go looking for a difference that is not there.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+import os
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+
+from datetime import date, datetime                                    # noqa: E402
+
+from malavi_curation import form_metadata                              # noqa: E402
+from malavi_curation import ledger                                     # noqa: E402
+from malavi_curation import public_feeds                               # noqa: E402
+from malavi_curation import repo_state, report_delivery                # noqa: E402
+from malavi_curation.config import load_config, repo_root              # noqa: E402
+from malavi_curation.submission_id import (                            # noqa: E402
+    directory_for, is_opaque,
+)
+from malavi_curation.report_delivery import (                          # noqa: E402
+    DeliveryError, MailHeld, deliver_decline_notice, deliver_name_confirmation, describe,
+)
+
+CONFIRMATION_EVENT = "name_confirmation_sent"
+DECLINE_EVENT = "decline_notice_sent"
+
+# Which ledger state produces which message, and which history event records it. Adding a
+# third outcome should mean adding a row here, not another branch somewhere.
+OUTCOMES = {
+    "approved": CONFIRMATION_EVENT,
+    "declined": DECLINE_EVENT,
+}
+
+
+def submissions_inbox() -> Path:
+    config = load_config()
+    return repo_root() / (config.get("submissions", {}) or {}).get(
+        "inbox_dir", "curation/intake/submissions")
+
+
+def already_sent(entry, event: str) -> Optional[str]:
+    """When this particular message went out, or None. The guard against sending twice.
+
+    Keyed by event, so an approval notice and a decline notice are tracked separately: a
+    submission that was declined, reopened and then approved should receive the
+    confirmation it never got, and must not be blocked by the decline it did.
+    """
+    for record in reversed(entry.history or []):
+        if record.get("event") == event:
+            return record.get("at")
+    return None
+
+
+def settled(entry, config: Dict, now: Optional[datetime] = None,
+            entries: Optional[Dict[str, object]] = None) -> Tuple[bool, str]:
+    """Is this submission finished enough to tell the submitter? With the reason if not.
+
+    Deliberately re-derived here rather than read off a flag, for the same reason
+    ``transition()`` re-checks its rules at the moment of the write: the state of the
+    ledger when a scan started is not the state when the message goes out.
+
+    The **same wait applies to a decline as to an approval**, which is worth saying out
+    loud because it is a choice. The hold exists so a second curator can still object to an
+    approval; applied to a decline it does the plainer job of giving anyone a window to
+    undo a mis-click before a stranger is told unwelcome news. One concept, one knob, both
+    directions.
+
+    ``entries`` is the rest of the ledger. When it is given, a name that another live,
+    approved, released or dormant submission also holds is never confirmed: the email
+    tells its reader to put the name in GenBank, and two people told that about one name
+    is the failure the whole reservation system exists to prevent. The ingest-time
+    collision check (``store_ingest.colliding_lineages``) runs too late to stop it.
+    """
+    if entry.state not in OUTCOMES:
+        return False, f"state is {entry.state}; nothing to tell the submitter yet"
+
+    if entry.state == "approved" and ledger.blocking_holds(entry):
+        return False, "a blocking verdict stands"
+
+    if entry.state == "approved" and entries is not None:
+        clashes = ledger.names_held_elsewhere(entries, entry)
+        if clashes:
+            return False, (f"another submission holds "
+                           f"{ledger.describe_name_clashes(clashes)}")
+
+    # Which timestamp the wait is measured from is this program's decision -- an approval
+    # has a field for it, a decline is read out of the history. The arithmetic itself, and
+    # the two failure behaviors that go with it (a validated hold that refuses zero, and an
+    # unreadable timestamp failing one submission rather than the whole run), live in
+    # ledger.hold_elapsed so that this program and the public queue cannot drift apart on
+    # what "the hold has elapsed" means.
+    stamp = entry.approved_at if entry.state == "approved" else _closed_at(entry)
+    if not stamp:
+        return False, f"{entry.state} but carries no timestamp for when that happened"
+
+    return ledger.hold_elapsed(stamp, config, now)
+
+
+def _closed_at(entry) -> str:
+    """When the submission was declined, read from its history.
+
+    There is no dedicated field for it the way there is for approval, so the history is
+    the record. Falling back to an empty string rather than to "now" matters: treating a
+    missing timestamp as this instant would send the message immediately, which is exactly
+    what the wait exists to prevent.
+    """
+    for record in reversed(entry.history or []):
+        if record.get("to") == "declined" or record.get("state") == "declined":
+            return record.get("at", "")
+    return ""
+
+
+def submitter_of(inbox: Path, submission_id: str) -> Tuple[str, str, str]:
+    """The submitter's address, their name, and a short reference, from submission.json.
+
+    A missing address is an error rather than a skip. It means a submission was approved
+    that we cannot answer, and that is something a maintainer has to see.
+    """
+    # The ledger is keyed by the minted opaque id; the directory on disk is named from the
+    # submitter. Looking the directory up under the id found nothing, so this program could
+    # never send anything -- and the resulting DeliveryError aborted the whole run, which
+    # (see main) discarded the "already told them" records of everyone emailed before it.
+    directory = directory_for(inbox, submission_id) if is_opaque(submission_id) \
+        else submission_id
+    if not directory:
+        raise DeliveryError(
+            f"{submission_id}: no directory is mapped to this id in submission_ids.json.")
+    path = inbox / directory / "submission.json"
+    if not path.is_file():
+        raise DeliveryError(
+            f"{submission_id}: no submission.json, so there is no submitter address to "
+            f"send to. Has check_template.py run on it?")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    submitter = data.get("submitter") or {}
+    reference = data.get("reference") or {}
+    label = " ".join(str(reference.get(k, "")) for k in ("title", "year")).strip()
+    email = (submitter.get("email") or "").strip()
+    if "@" not in email:
+        # Raised here, where the caller can catch it per submission, rather than left for
+        # build_notice_payload to raise mid-send. One approved submission with no address
+        # must not stop every other submitter from being told.
+        raise DeliveryError(
+            f"{submission_id}: submission.json carries no usable submitter address "
+            f"({email!r}). Nothing was sent for this one.")
+    return email, submitter.get("name", ""), label
+
+
+def selections_of(inbox: Path, submission_id: str) -> Dict[str, object]:
+    """What the submitter chose on the form, for the confirmation email to quote back.
+
+    Read from ``metadata.json`` -- the verbatim form response -- rather than from
+    ``submission.json``, because the answers are the submitter's own words and the
+    confirmation email quotes them ("You selected ...").
+
+    A missing or unreadable metadata.json is not an error. It yields empty strings and
+    ``records_held=True``, which is the same conservative reading applied to a submission
+    that predates the embargo question: say nothing specific, and do not tell somebody
+    their unpublished records are about to be published when we cannot confirm they
+    agreed to it.
+    """
+    directory = directory_for(inbox, submission_id) if is_opaque(submission_id) \
+        else submission_id
+    metadata: Dict[str, object] = {}
+    if directory:
+        path = inbox / directory / "metadata.json"
+        if path.is_file():
+            try:
+                metadata = json.loads(path.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                metadata = {}
+    return {
+        # Quoted verbatim in the email, so the raw answer rather than the normalized one.
+        # Through stage_answer rather than find_answer directly: the embargo question also
+        # contains "published", and find_answer returns the first match in sheet order, so
+        # doing this lookup here was one form reorder away from quoting the wrong answer.
+        "stage": form_metadata.stage_answer(metadata),
+        "sending": form_metadata.find_answer(metadata, "sending") or "",
+        "records_included": form_metadata.records_were_included(metadata),
+        "records_held": form_metadata.records_are_held(metadata) if metadata else True,
+    }
+
+
+def bulk_allowed_by_environment() -> bool:
+    """Whether MALAVI_ALLOW_BULK_UNTIL names today or a later date (repo_state's rule)."""
+    return repo_state.bulk_allowed_by_environment()
+
+
+def due_submissions(entries, config, only: Optional[List[str]] = None) -> List[str]:
+    """The submissions the loop in main() would write to now, in its order.
+
+    The same checks, applied without sending: the state has an outcome to tell, it has
+    not been told, no other submission holds one of its names, and the hold has elapsed.
+    Used for the bulk refusal, which must count before the first send.
+    """
+    due = []
+    for submission_id in (only or sorted(entries)):
+        entry = entries.get(submission_id)
+        if entry is None:
+            continue
+        event = OUTCOMES.get(entry.state)
+        if event is None or already_sent(entry, event):
+            continue
+        if entry.state == "approved" and ledger.names_held_elsewhere(entries, entry):
+            continue
+        ready, _why = settled(entry, config, entries=entries)
+        if not ready:
+            continue
+        if entry.state == "approved" and not ledger.agreed_names(entry):
+            continue
+        due.append(submission_id)
+    return due
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("submission_id", nargs="*",
+                        help="only consider these; default is every eligible submission")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="show who would be written to and what they would be told; "
+                             "send nothing and record nothing")
+    parser.add_argument("--check", action="store_true",
+                        help="report whether delivery is configured, and stop")
+    parser.add_argument("--no-publish", action="store_true",
+                        help="do not rebuild and publish the public queue afterwards")
+    parser.add_argument("--allow-bulk", action="store_true",
+                        help="write to more submitters in one run than "
+                             "review.max_submitter_notices_per_run allows")
+    parser.add_argument("--standalone", action="store_true",
+                        help="skip the check that this checkout is not behind its remote")
+    arguments = parser.parse_args(argv)
+
+    print("== malavi_rebuild :: notify submitters ==")
+    print(describe())
+    print(report_delivery.describe_mail_mode())
+    if arguments.check:
+        return 0
+
+    config = load_config()
+    inbox = submissions_inbox()
+    sent = skipped = failed = refused = held = 0
+    named = bool(arguments.submission_id)   # explain skips only when asked about one
+
+    if not arguments.dry_run:
+        # A stale checkout must not write the ledger (review of 2026-10-16, finding 17).
+        try:
+            repo_state.require_fresh("notify_submitters.py", standalone=arguments.standalone)
+        except repo_state.StaleCheckout as exc:
+            print(f"\n{exc}", file=sys.stderr)
+            return 2
+
+    # The bulk refusal (guard rails of 2026-10-16): counted BEFORE anything is sent, with
+    # the same four checks the loop below applies, so a run that would write to more
+    # strangers than a real day produces sends to none of them.
+    limit = int((config.get("review") or {}).get("max_submitter_notices_per_run", 5) or 5)
+    with ledger.open_ledger(inbox, write=False) as preview_entries:
+        due = due_submissions(preview_entries, config, arguments.submission_id)
+    if len(due) > limit and not (arguments.allow_bulk or bulk_allowed_by_environment()):
+        print(f"\nREFUSED: {len(due)} submitters would be written to in one run, more than "
+              f"review.max_submitter_notices_per_run ({limit}); nothing was sent. Check the "
+              f"list; if every one is really due, run again with --allow-bulk.",
+              file=sys.stderr)
+        for submission_id in due:
+            print(f"    {submission_id}", file=sys.stderr)
+        return 2
+
+    try:
+        with ledger.open_ledger(inbox, write=not arguments.dry_run) as entries:
+            for submission_id in (arguments.submission_id or sorted(entries)):
+                entry = entries.get(submission_id)
+                if entry is None:
+                    print(f"  {submission_id}: not in the ledger")
+                    continue
+
+                event = OUTCOMES.get(entry.state)
+                if event is None:
+                    skipped += 1
+                    if named:
+                        print(f"  {submission_id}: state is {entry.state}; nothing to "
+                              f"tell the submitter yet")
+                    continue
+
+                when = already_sent(entry, event)
+                if when:
+                    skipped += 1
+                    if named:
+                        print(f"  {submission_id}: already told, on {when}")
+                    continue
+
+                # A name two submissions claim is not "not due"; it is a fault a person has
+                # to resolve, and a quiet skip would leave both submitters waiting for an
+                # email that never comes. So it is reported on stderr and counted as a
+                # refusal, before settled() -- which applies the same rule -- is consulted.
+                if entry.state == "approved":
+                    clashes = ledger.names_held_elsewhere(entries, entry)
+                    if clashes:
+                        print(f"  {submission_id}: REFUSED -- another submission holds "
+                              f"{ledger.describe_name_clashes(clashes)}. Not confirming a "
+                              f"name two submissions claim; resolve which claim stands.",
+                              file=sys.stderr)
+                        refused += 1
+                        continue
+
+                ready, why_not = settled(entry, config, entries=entries)
+                if not ready:
+                    skipped += 1
+                    if named:
+                        print(f"  {submission_id}: not ready -- {why_not}")
+                    continue
+
+                # Per submission, so one bad entry cannot discard the history records of
+                # everyone already emailed in this run. open_ledger only save()s on a clean
+                # exit, so an exception escaping here means the sends happened and the
+                # "already told them" guards did not -- and the next run mails them again.
+                try:
+                    email, who, reference = submitter_of(inbox, submission_id)
+                except DeliveryError as exc:
+                    print(f"  {submission_id}: SKIPPED -- {exc}")
+                    skipped += 1
+                    continue
+
+                print(f"  {submission_id}  [{entry.state}]")
+                print(f"    to     : {email or '(none)'}")
+
+                if entry.state == "approved":
+                    names = ledger.agreed_names(entry)
+                    if not names:
+                        # A records-only submission claims no names. "Your names are
+                        # confirmed" listing nothing would read as a mistake.
+                        print("    (approved but claims no names -- records-only "
+                              "submission, nothing to confirm)")
+                        skipped += 1
+                        continue
+                    changed = {p: g for p, g in (entry.name_corrections or {}).items()
+                               if p != g}
+                    print(f"    names  : {', '.join(names)}")
+                    for proposed, granted in sorted(changed.items()):
+                        print(f"    changed: {proposed} -> {granted}")
+                    selections = selections_of(inbox, submission_id)
+                    print(f"    records: {'held until publication' if selections['records_held'] else 'in the next release'}"
+                          f"{'' if selections['records_included'] else ' (none sent yet)'}")
+                    if arguments.dry_run:
+                        print("    [dry-run] nothing sent")
+                        continue
+                    deliver = deliver_name_confirmation
+                    message = dict(to=email, submitter_name=who, names=names,
+                                   corrections=changed, reference=reference,
+                                   selections=selections)
+                    record = {"event": event, "at": ledger.now_utc(), "names": names,
+                              "corrections": changed, "to": email}
+                else:
+                    print("    message: not accepted in its current form; invites a reply")
+                    if arguments.dry_run:
+                        print("    [dry-run] nothing sent")
+                        continue
+                    deliver = deliver_decline_notice
+                    message = dict(to=email, submitter_name=who, reference=reference)
+                    record = {"event": event, "at": ledger.now_utc(), "to": email}
+
+                # The send is guarded for the same reason submitter_of() above is, and this
+                # is the guard that was missing: open_ledger() only save()s on a clean exit
+                # of the `with`, so an exception escaping HERE discarded the history records
+                # of everyone already emailed in this run. The mail had gone out; the
+                # "already told them" guard had not been written; the next run mailed them
+                # a second time. `Exception`, not just DeliveryError -- the transport can
+                # raise a requests error of its own, and the consequence is identical.
+                try:
+                    result = deliver(submission_id, **message)
+                except MailHeld as exc:
+                    # Not a fault: the mail mode is dry, or the endpoint held it. Nothing
+                    # is recorded, so it is sent by the next run that can send; and it is
+                    # exit 2, not 1, so the cycle goes on to commit its state (code
+                    # review 2026-10-16, finding 2).
+                    print(f"    HELD -- {exc}")
+                    held += 1
+                    continue
+                except Exception as exc:                      # noqa: BLE001 -- see above
+                    print(f"    NOT SENT -- {exc}", file=sys.stderr)
+                    failed += 1
+                    continue
+
+                if getattr(result, "action", "") == "already_sent":
+                    # The endpoint keeps its own record of what it has mailed, keyed on
+                    # the submission and its names, and declined to send a second copy.
+                    # That is the case where a previous attempt timed out here after the
+                    # mail had gone; the history record below is what was missing.
+                    print("    already sent by the endpoint on an earlier attempt; "
+                          "recorded, not re-sent")
+                else:
+                    print(f"    sent to {result.notified} address(es)")
+                entry.history.append(record)
+                sent += 1
+
+    except DeliveryError as exc:
+        # Still reachable: open_ledger() itself, or anything outside the per-submission
+        # guards. Nothing was sent in that case, so there is no history to lose.
+        print(f"\nERROR: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\nnotified {sent} submitter(s); {skipped} not due"
+          + (f"; {held} held (mail not sent; retried next run)." if held else "."))
+
+    # This program is the one that runs *after* a publish hold has elapsed, which makes it
+    # the moment the public queue is finally allowed to say "Accepted" -- see
+    # build_site_feeds.public_review_state. No state changed here, so nothing else would
+    # trigger the rebuild; without this the flip would wait for whatever ran next.
+    #
+    # Unconditional rather than gated on `sent`, because the queue can be due to flip even
+    # when nobody was written to: a submission already told, or one that claims no names.
+    if not arguments.dry_run and not arguments.no_publish:
+        print("")
+        public_feeds.refresh()
+
+    if failed:
+        # The ledger was saved on the way out, so the ones that DID go are recorded and
+        # will not be repeated. Say plainly that the run was partial.
+        print(f"{failed} delivery/deliveries failed and will be retried on the next run.",
+              file=sys.stderr)
+    if refused:
+        # Not a retry case: the next run refuses again until somebody decides which of the
+        # two submissions holds the name.
+        print(f"{refused} confirmation(s) refused because another submission holds the "
+              f"same name; these need a person, not a retry.", file=sys.stderr)
+    # Exit 1 when a delivery failed (retried next run); exit 2 when the only thing wrong is
+    # a refusal, which is the project's "the run worked and a person has to act" code
+    # (check_template.py, fetch_verdicts.py, promote.py). Until 2026-10-02 both returned 1,
+    # so a standing name clash looked like a broken run to anything reading the exit code.
+    if failed:
+        return 1
+    # Held by the mail guard: the run worked, nothing was sent, a person decides the mode.
+    return 2 if (refused or held) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

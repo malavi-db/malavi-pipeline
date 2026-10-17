@@ -1,0 +1,159 @@
+# =============================================================================
+# What goes into the PUBLIC pipeline repository (malavi-db/malavi-pipeline).
+# Read by publish/push_pipeline.sh. Nothing not listed here is ever copied.
+# =============================================================================
+#
+# WHY AN ALLOWLIST AND NOT A LIST OF EXCLUSIONS
+# ---------------------------------------------
+# The private repository holds submissions from people who have not published yet,
+# curator identities, working notes and credentials. A list of things to leave behind
+# fails the first time somebody adds a file nobody thought of: the new file is public by
+# default, and nobody finds out. A list of things to take fails the other way -- a new
+# file is absent until somebody adds it here on purpose. Absent is recoverable. Published
+# is not.
+#
+# This is the same reasoning that makes publish/push_site.sh copy docs/ and only docs/.
+#
+# FORMAT
+# ------
+#   path            a file, copied to the same path in the public repo
+#   path/           a directory, copied recursively
+#   src -> dest     copied under a different name
+#   # comment       ignored
+#
+# Directory copies still skip the junk listed in ALWAYS_SKIP in push_pipeline.sh
+# (__pycache__, .pyc, .DS_Store and so on), because those are noise in every tree.
+#
+# WHAT DELIBERATELY IS NOT HERE, AND WHY
+# --------------------------------------
+#   config/project.yml     holds live Drive folder ids, sheet ids, form edit URLs and the
+#                          report endpoint. A sanitized project.example.yml is GENERATED
+#                          from it by the publisher, with every such value blanked.
+#   config/curators.yml    real curator addresses and personal aliases. An example ships
+#                          instead.
+#   curation/intake/       submissions, including unpublished sequences from people who
+#                          asked us to hold them. The single most important exclusion.
+#   curation/benchmark/    papers and ground-truth annotations built from them.
+#   data/                  the record store, which accumulates submissions BEFORE they are
+#                          released, including embargoed ones. The public artifact for
+#                          data is the release, which is published separately.
+#   docs/                  the rendered website. It has its own public repository already.
+#   ops/*.html             build output; the same documents are already live on the site.
+#   DELIVERY_PLAN.md       design argument, open problems, things not yet built.
+#   CUSTODY_PRIVATE.md     recovery paths. Never, under any circumstances.
+#   results/, legacy/,     working notes, scratch, archived material.
+#   preview/               a development tool whose output inlines the whole submission
+#                          queue into one file. Its own header says never to publish it.
+
+# ---- the library and the programs that use it -------------------------------
+curation/src/
+curation/tests/
+curation/r/
+curation/templates/
+curation/pyproject.toml
+curation/README.md
+curation/REVIEWS.md
+# Every program in curation/ that the RUNBOOK tells someone to run. RUNBOOK.md and
+# BREAK_GLASS.md both ship to the public repo, and BREAK_GLASS names that repo as the
+# recovery route -- so a program missing from this list gives a successor a runbook for
+# something that is not there. Six were missing until 2026-08-14 (close_submission,
+# correct_store, edition_report, ingest_submissions, lift_embargo, publish_reference),
+# all written after this section was, including the one that turns an approval into data.
+# push_pipeline.sh now warns when a curation/*.py is not listed here.
+curation/apply_corrections.py
+curation/apply_lineage_decisions.py
+curation/audit_lineage_history_genbank.py
+curation/build_status_board.py
+curation/fetch_updates.py
+curation/intake_cycle.py
+curation/record_lineage_event.py
+curation/review_synonymies.py
+curation/seed_lineage_history.py
+curation/seed_genomic_resources.py
+curation/sync_genomic_resources.py
+curation/batch_intake.py
+curation/build_name_reservations.py
+curation/build_release.py
+curation/build_site_feeds.py
+curation/check_template.py
+curation/close_submission.py
+curation/correct_store.py
+curation/edition_report.py
+curation/enroll.py
+curation/import_master_db.py
+curation/lund_changes_report.py
+curation/fetch_oa_articles.py
+curation/fetch_submissions.py
+curation/fetch_verdicts.py
+curation/ingest_submissions.py
+curation/lift_embargo.py
+curation/notify_submitters.py
+curation/promote.py
+curation/publish_reference.py
+curation/publish_report.py
+curation/push_status.py
+curation/privacy_scan.py
+
+# How to issue and install the Drive credential every fetch program authenticates with.
+# Without it a successor has the programs and no way to let them read anything. Checked
+# 2026-08-14: it names no ids, keys or folder names, only malaviadmin@gmail.com, which is
+# the contact address printed on the public site.
+curation/GOOGLE_ACCESS.md
+
+# ---- the Google-side pieces, as templates -----------------------------------
+# These hold no live value: every id, address list and secret is a Script Property of
+# the Apps Script project (settings.gs), and the live values live in CUSTODY_PRIVATE.md.
+curation/apps_script/
+
+# ---- the rest of the pipeline -----------------------------------------------
+export/
+
+# The watcher, named file by file rather than as a directory. Its tree is mostly
+# runtime output -- a BLAST database rebuilt from each release, cached GenBank
+# records, Slurm logs, and the worklists of individual runs. All of it is
+# regenerated, none of it is code, and together it was 23 MB of the first build.
+watcher/scan_publications.py
+watcher/lineage_gap_finder.py
+watcher/notify.py
+watcher/test_scan_publications.py
+watcher/extract_malavi_lineages.R
+watcher/extract_malavi_refs.R
+watcher/slurm/
+watcher/README.md
+
+schemas/
+reference/
+backup/lifeboat.sh
+publish/push_site.sh
+
+# The narrow companion to push_site.sh: it publishes the three generated JSON feeds and
+# nothing else, which is what lets the review programs republish the public queue
+# automatically when a curator's decision changes it. Contains no ids or secrets -- the
+# token is read from a path, and the repository URL is the public site's.
+publish/push_feeds.sh
+publish/README.md
+publish/public_manifest.txt
+publish/push_pipeline.sh
+publish/privacy_allow.txt
+publish/install_hooks.sh
+publish/hooks/
+
+# ---- documentation generator, and its sources -------------------------------
+# The rendered .html it produces is excluded: those documents are already published on
+# the website, and shipping build output alongside its source invites the two to drift.
+ops/build_docs.py
+ops/public_audit.py
+ops/record_review.py
+ops/README.md
+ops/_shared_style.html
+ops/curator-instructions.src.html
+ops/malavi-user-guide.src.html
+
+# ---- documents ---------------------------------------------------------------
+RUNBOOK.md
+BREAK_GLASS.md
+CITATION.cff
+LICENSE
+config/curators.example.yml
+publish/public_README.md -> README.md
+publish/public_gitignore -> .gitignore

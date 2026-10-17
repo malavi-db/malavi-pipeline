@@ -1,0 +1,142 @@
+
+project:
+  name: malavi_rebuild
+  curator_email: vaellis@udel.edu
+
+malaviR:
+  source_path: /mnt/ellisbiostore/malaviR
+  github: vincenzoaellis/malaviR
+  release: "2026-09-15"
+
+tables:
+  hosts_and_sites:
+    extract_key: "Hosts and Sites Table"
+    description: "Every record of a lineage found in a host: the host taxonomy, where it was found, prevalence where the study reported it, and the reference."
+  grand_lineage_summary:
+    extract_key: "Grand Lineage Summary"
+    description: "One row per lineage: its GenBank accession, the morphospecies it is linked to if any, and how many host species, genera, families and orders it has been found in."
+  morpho_species:
+    extract_key: "Morpho Species Summary"
+    description: "Lineages that have been linked to a morphologically described species, with the reference for the link."
+  references:
+    extract_key: "Table of References"
+    description: "Every published paper whose records have been entered into MalAvi."
+  vector_data:
+    extract_key: "Vector Data Table"
+    description: "Lineages detected in arthropod vectors, the detection method, and where."
+  lineage_history:
+    extract_key: "Lineage History"
+    description: "What changed about a lineage name and when: a sequence completed under the old name, a rename, a merge into another lineage, or a removal, with the old and new sequence and the reason, so an analysis made on an earlier release can be mapped onto this one."
+  genomic_resources:
+    extract_key: "Genomic Resources"
+    description: "Genomes, transcriptomes and other large sequence records linked to a cyt b lineage: the kind of record, its accession and database, its length, the host it came from, and the study. A record is listed under a lineage only when the cytochrome b barcode inside it is that lineage."
+  taxonomy:
+    description: "Every host species in MalAvi matched to the eBird/Clements name and to the tip label used in the clootl phylogeny, with the order and family that follow and how each name was matched. The two names are the same species, but a tree tip can keep an older genus placement, so the columns do not always agree."
+
+alignment:
+  description: "479 bp cytochrome b barcode alignment, one sequence per lineage."
+  length_bp: 479
+  min_unambiguous_bp: 470
+  genus_prefixes: { P: Plasmodium, H: Haemoproteus, L: Leucocytozoon }
+
+paths:
+  data_dir: data
+  docs_data_dir: docs/assets/data   # website copy of the JSON the tables page loads
+
+submissions:
+  responses_sheet: ""
+  form_url: "https://docs.google.com/forms/d/e/1FAIpQLSerNc5iuTRXGEpdT-qjtw5u-7AMtCyMXeRGaf9-jdC894bZ1g/viewform"
+  form_edit: ""
+
+  template_folder: ""
+  materials_folder: ""
+
+  retired:
+    responses_sheet: ""
+    form_edit: ""
+    template_folder: ""
+    materials_folder: ""
+  inbox_dir: curation/intake/submissions
+
+  exclude:
+    - id: 
+      reason: "The Shimizu 2026 vulture paper, submitted 2026-07-27 with the note
+        'test' and never reviewed. Withdrawn 2026-08-20 and excluded so the workbook can
+        be submitted again, live, as a demonstration -- excluding it is what frees
+        NECMON01 and NECMON02 for the resubmission to claim. The withdrawal is in the
+        ledger; this only keeps the directory out of the feeds and out of enroll."
+    - id: 
+      reason: "Test submission while building the form; Gupta worked example, no real data."
+    - id: 
+      reason: "Test submission while building the form; Gupta worked example, no real data."
+    - id: 20260806T210800_DEMO_Testsubmission
+      reason: "Demonstration submission built from release data to exercise the pipeline and produce the screenshots in the curator instructions. Invented study, invented submitter; TUMIG31 and TUMIG25 are not real claims and must never reach the public reservation feed."
+
+intake:
+  state_in_repo: true
+  push_state: true
+
+review:
+  publish_hold_hours: 72
+  promoter_interval_hours: 6
+  awaiting_submitter_timeout_days: 60
+  stale_review_days: 30
+
+  max_new_verdicts_per_run: 12
+  max_reports_per_run: 6
+  max_submitter_notices_per_run: 5
+  curator_registry: config/curators.yml
+
+  verdict_form_url: ""
+  verdict_form_edit: ""
+
+  verdict_form_entries:
+    submission_id: 1106066870
+    revision: 1976575123
+    hold_id: 227246214            # "Which hold are you clearing?"        (override)
+    consulted: 516222350          # "Who did you consult?"                (override)
+    confirmed_by: 286409457       # "Who confirmed it?"
+    withdraw_flag_id: 1700816734  # "Which flag are you withdrawing?"     (retraction)
+    correction_id: 1731711003     # "Which correction are you approving?"
+    discussed_with: 272486221     # "Who did you discuss it with?"
+
+  verdict_sheet: ""
+
+  verdict_sheet_timezone: "UTC"
+
+privacy:
+  public_addresses:
+    - malaviadmin@gmail.com
+    - vaellis@udel.edu
+  public_ids:
+    - 1FAIpQLSerNc5iuTRXGEpdT-qjtw5u-7AMtCyMXeRGaf9-jdC894bZ1g
+    - 20260806T210800_DEMO_Testsubmission
+
+google:
+  service_account_key: ~/.config/malavi/service-account.json
+
+  report_endpoint: ""
+  report_secret_file: ~/.config/malavi/report_secret.txt
+
+watcher:
+  sources: [europepmc, openalex, crossref]
+  europepmc_query: '(((haemosporidian OR haemosporidia OR Haemoproteus OR Leucocytozoon OR Parahaemoproteus OR "avian malaria") OR ((Plasmodium AND (bird OR birds OR avian OR passerine OR songbird OR nestling OR waterfowl OR raptor OR owl OR penguin OR poultry OR "wild bird" OR Culicoides OR "biting midge" OR Simuliidae OR blackfly OR "black fly" OR Culex OR mosquito) AND (lineage OR "cytochrome b" OR cytb OR mtDNA)) NOT (falciparum OR vivax OR ovale OR malariae OR knowlesi OR berghei OR chabaudi OR yoelii OR "human malaria" OR primate OR macaque OR rodent OR murine))))'
+  keyword_query: 'haemosporidian avian lineage cytochrome b'
+  relevance_filter_sources: [crossref]
+  relevance_terms: [haemospor, haemoproteus, plasmodium, leucocytozoon, "avian malaria", malaria, "blood parasite", parasit, "cytochrome b", cytb]
+  lookback_days: 14
+  delivery: issue
+  max_items_per_batch: 50
+
+links:
+  blast_shiny: "https://811l41-vincenzo-ellis.shinyapps.io/MalAviBLAST/"
+  tree_project: "https://github.com/vincenzoaellis/malaviTree"
+  site: "https://malavi-db.github.io/"
+
+# ---------------------------------------------------------------------------
+# This file was generated from the maintainer's config/project.yml by
+# publish/push_pipeline.sh. Every Drive folder id, sheet id, form edit URL and
+# deployment URL has been blanked, and the maintainer's comments removed. Copy
+# it to config/project.yml and fill in your own values; RUNBOOK.md says where
+# each one comes from and what each key means.
+# ---------------------------------------------------------------------------

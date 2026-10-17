@@ -1,0 +1,10 @@
+# Exceptions for curation/privacy_scan.py, one per line, tab-separated:
+#   destination   class   path glob   reason
+# destination: site | feeds | pipeline | malaviR | history | *     class: a class name or *
+# Every line needs a reason. The scanner refuses a line without one. Keep this short:
+# an exception here is a decision that something private-looking is public on purpose.
+pipeline	address	curation/src/malavi_curation/curators.py	a docstring example about Gmail's dot handling; the example has to be a gmail.com address
+pipeline	address	curation/tests/test_curators.py	the same Gmail-dots example, in its test
+pipeline	address	publish/README.md	the SSH remote user name at github.com, not a person
+pipeline	address	curation/GOOGLE_ACCESS.md	a service-account address whose project number is already masked as XXXXXX
+malaviR	address	DESCRIPTION	the R package's author addresses, public by the package's own convention

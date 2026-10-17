@@ -1,0 +1,51 @@
+# =============================================================================
+# The curator registry — example
+# -----------------------------------------------------------------------------
+# Copy to config/curators.yml and fill in real people. The real file is not
+# published, because it carries personal aliases as well as public addresses.
+#
+# WHAT THIS FILE IS FOR
+# ---------------------
+# The verdict form asks Google to verify the responder's email address, so every
+# response arrives carrying an address its owner demonstrably controls. That
+# proves control of a mailbox and nothing more — it does not prove the person is
+# a MalAvi curator. This file is what proves that. A verdict from an address not
+# listed here is not a verdict: it is recorded, flagged to the maintainer, and
+# never acted on.
+#
+# The verdict form link is unlisted, not private. Anyone sent the link can submit
+# through it, so this allowlist — not the obscurity of the URL — is the gate.
+#
+# FIELDS
+# ------
+#   id       short stable handle, used in the ledger. Never reuse one.
+#   name     as it should appear in a report and on the site.
+#   email    the address the person answers the verdict form from.
+#   role     "lead" or "curator". A lead may clear another curator's flag and may
+#            approve a correction; see curation/src/malavi_curation/ledger.py.
+#   active   false retires someone without deleting the record, so their past
+#            verdicts still resolve to a name.
+#   aliases  other addresses the same person may answer from. Optional.
+# =============================================================================
+
+curators:
+  - id: lead
+    name: A Lead Curator
+    email: lead@example.edu
+    role: lead
+    active: true
+    aliases:
+      - lead.alternate@example.org
+
+  - id: curator1
+    name: A Curator
+    email: curator@example.edu
+    role: curator
+    active: true
+
+  # Retired, but kept so old verdicts still resolve to a name rather than an id.
+  - id: curator0
+    name: A Former Curator
+    email: former@example.edu
+    role: curator
+    active: false

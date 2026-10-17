@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "malavi/genomic_resources.schema.json",
+  "title": "MalAvi Genomic Resources record",
+  "description": "A genome, transcriptome or other large sequence record linked to a cyt b lineage: what kind, where deposited, how long, from which host and study. Added to the release on 2026-09-25 (curator meeting of 2026-09-24, point 9); 11 columns.",
+  "type": "object",
+  "properties": {
+    "LINEAGE_NAME":   { "type": "string", "description": "MalAvi lineage the record belongs to (its cyt b barcode is this lineage)." },
+    "RESOURCE_TYPE":  { "type": "string", "enum": ["mitogenome", "mitogenome_partial", "nuclear_genome", "apicoplast_genome", "transcriptome", "other"], "description": "Kind of record." },
+    "ACCESSION":      { "type": "string", "description": "INSDC nucleotide, BioProject, SRA/ENA or assembly accession." },
+    "DATABASE":       { "type": ["string", "null"], "description": "Where it is deposited (GenBank, ENA, DDBJ, SRA, ...)." },
+    "LENGTH_BP":      { "type": ["string", "null"], "description": "Length in base pairs when a single sequence." },
+    "DESCRIPTION":    { "type": ["string", "null"], "description": "What the record is, in a few words." },
+    "HOST_SPECIES":   { "type": ["string", "null"], "description": "Host the sample came from." },
+    "REFERENCE_NAME": { "type": ["string", "null"], "description": "Citation key of the study that produced it." },
+    "DOI":            { "type": ["string", "null"], "description": "DOI of that study, if published." },
+    "SOURCE":         { "type": ["string", "null"], "description": "Submission id, curated backbone list, or NCBI scan that brought the row in." },
+    "NOTES":          { "type": ["string", "null"], "description": "Free text." }
+  },
+  "required": ["LINEAGE_NAME", "RESOURCE_TYPE", "ACCESSION"],
+  "additionalProperties": false
+}

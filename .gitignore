@@ -1,0 +1,38 @@
+# Credentials. None of these should ever exist in a clone of this repository, but the
+# rules are here so that a maintainer working from it cannot commit one by accident.
+*token*.txt
+*secret*.txt
+service-account*.json
+credentials*.json
+.env
+
+# The maintainer's filled-in configuration. Copy config/project.example.yml to
+# config/project.yml and fill in your own values; the result stays local.
+config/project.yml
+config/curators.yml
+
+# Submissions and anything derived from them. A submission can contain sequences whose
+# author has not published yet.
+curation/intake/
+curation/benchmark/
+
+# The record store and built releases.
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# Logs and scratch
+logs/
+*.log
+.DS_Store

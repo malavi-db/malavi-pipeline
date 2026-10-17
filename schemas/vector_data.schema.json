@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "malavi/vector_data.schema.json",
+  "title": "MalAvi Vector Data record",
+  "description": "Parasite lineage detected in an arthropod vector. Authoritative columns as of malaviR release 2026-03-23 (6 columns).",
+  "type": "object",
+  "properties": {
+    "LINEAGE_NAME":   { "type": "string", "description": "MalAvi parasite lineage code." },
+    "VECTOR_SPECIES": { "type": ["string", "null"], "description": "Vector species the lineage was detected in." },
+    "VECTOR_METHOD":  { "type": ["string", "null"], "description": "Detection method / evidence type." },
+    "COUNTRY_NAME":   { "type": ["string", "null"], "description": "Country of the vector record." },
+    "SITE_NAME":      { "type": ["string", "null"], "description": "Locality of the vector record." },
+    "REFERENCE_NAME": { "type": ["string", "null"], "description": "Citation key into the references table." }
+  },
+  "required": ["LINEAGE_NAME"],
+  "additionalProperties": false
+}

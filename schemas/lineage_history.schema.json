@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "malavi/lineage_history.schema.json",
+  "title": "MalAvi Lineage History record",
+  "description": "One event that changed what a lineage name means: its sequence replaced, the name changed, the lineage merged into another, or removed. Added to the release on 2026-09-25 by the curators' decision of 2026-09-24; 10 columns.",
+  "type": "object",
+  "properties": {
+    "LINEAGE_NAME": { "type": "string", "description": "The name the event is filed under: the surviving name, or for a removal the name removed." },
+    "EVENT":        { "type": "string", "enum": ["sequence_updated", "renamed", "merged_into", "removed"], "description": "What happened." },
+    "OLD_NAME":     { "type": "string", "description": "The name before the event." },
+    "NEW_NAME":     { "type": ["string", "null"], "description": "The name after the event; the same as OLD_NAME for a sequence update; empty for a removal." },
+    "OLD_SEQUENCE": { "type": ["string", "null"], "description": "The sequence stored before the event; empty when it was not recorded (events before the table existed)." },
+    "NEW_SEQUENCE": { "type": ["string", "null"], "description": "The sequence stored after the event; empty for a removal." },
+    "DATE":         { "type": ["string", "null"], "description": "ISO date of the decision; empty when not recorded." },
+    "REASON":       { "type": ["string", "null"], "description": "Why, in the curators' words." },
+    "SOURCE":       { "type": ["string", "null"], "description": "Submission id, GenBank accession, person, or 'curator decision'." },
+    "RELEASE":      { "type": ["string", "null"], "description": "The release in which the change first appears." }
+  },
+  "required": ["LINEAGE_NAME", "EVENT", "OLD_NAME"],
+  "additionalProperties": false
+}

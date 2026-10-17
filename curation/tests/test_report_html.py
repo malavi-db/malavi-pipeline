@@ -1,0 +1,1050 @@
+"""Tests for the HTML curator report.
+
+Two things are being protected here.
+
+**Safety.** The values on this page arrive through a public Google Form and are rendered
+into a document a curator opens from ``file://``. Markup in a spreadsheet cell must stay
+text, and the file must never be written anywhere but the gitignored intake tree, because
+it carries unpublished sequences and a submitter's email address.
+
+**Honesty.** A run in which checks failed to execute must not look like a clean one, and a
+skipped check must not read as a passed check. Those are the ways this document could
+actively mislead the person it is written for.
+"""
+from __future__ import annotations
+
+import re
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from malavi_curation.checks import CheckResult, CheckRun, Finding, Outcome, Severity
+from malavi_curation import report_html
+from malavi_curation.report_html import render_report, write_report
+
+# A payload that is inert as text and dangerous as markup. Attribute-breaking quote
+# included, because escaping the angle brackets alone would not be enough.
+HOSTILE = '"><script>alert(1)</script><img src=x onerror=alert(2)>'
+
+
+def _submission(**overrides):
+    submission = {
+        "schema_version": "1.0.0",
+        "submitter": {"name": "A Submitter", "email": "someone@example.org",
+                      "institution": "Somewhere"},
+        "reference": {"doi": "10.1234/abc", "title": "A title", "year": 2026},
+        "accessions": ["MK493368"],
+        "records": [{"lineage_name": "TUMIG19", "host_species": "Turdus migratorius",
+                     "country": "Sweden", "site": "Lund", "number_found": 3.0,
+                     "number_tested": 25.0, "tier": "new",
+                     "source": {"sheet": "Hosts_and_Sites", "row": 3}}],
+        "vectors": [],
+        "sequences": [],
+        "proposed_lineages": [{"lineage_name": "TUMIG19", "parasite_genus": "Haemoproteus",
+                               "host_species": "Turdus migratorius",
+                               "accessions": ["MK493368"],
+                               "source": {"sheet": "NewLineages", "row": 3}}],
+        "provenance": {"source": "template", "workbook": "fixture.xlsx",
+                       "normalizations": [], "header_repairs": []},
+    }
+    submission.update(overrides)
+    return submission
+
+
+def _run(*results, **provenance):
+    return CheckRun(results=tuple(results),
+                    provenance=provenance or {"release": "2026-03-23"})
+
+
+class TestEscaping:
+    def test_markup_in_a_cell_stays_text(self):
+        html = render_report(
+            _submission(records=[{"lineage_name": HOSTILE, "host_species": HOSTILE,
+                                  "country": HOSTILE, "notes": HOSTILE}]),
+            _run())
+        # The decisive assertions: no element the payload was trying to create exists,
+        # and its quote never broke out of an attribute.
+        assert not re.findall(r"<script\b", html)
+        assert not re.findall(r"<img\b", html)
+        assert '"><script' not in html
+        # And it is still visible to the curator, escaped, rather than silently dropped.
+        assert "&lt;script&gt;" in html
+
+    def test_markup_in_a_finding_stays_text(self):
+        html = render_report(_submission(), _run(CheckResult(
+            check_id="prevalence_sanity", outcome=Outcome.FINDING, evaluated=1,
+            findings=(Finding(subject=HOSTILE, message=HOSTILE,
+                              severity=Severity.BLOCKING),))))
+        assert not re.findall(r"<script\b", html)
+        assert not re.findall(r"<img\b", html)
+
+    def test_markup_in_submitter_details_stays_text(self):
+        html = render_report(
+            _submission(submitter={"name": HOSTILE, "email": HOSTILE}), _run())
+        assert not re.findall(r"<script\b", html)
+
+
+class TestSelfContained:
+    def test_no_remote_references(self):
+        """A fetch would fail from file://, from a mail attachment, and behind a login.
+
+        The report has to look the same in all three, because which one a curator uses
+        is a deployment decision that should not change what they see.
+        """
+        html = render_report(_submission(), _run())
+        remote = re.findall(r'(?:src|href)="(?!data:|#)[^"]*"', html)
+        assert remote == [], f"report reaches out to {remote}"
+
+    def test_no_scripts(self):
+        html = render_report(_submission(), _run())
+        assert not re.findall(r"<script\b", html)
+
+    def test_declares_a_restrictive_policy(self):
+        html = render_report(_submission(), _run())
+        assert "Content-Security-Policy" in html
+        assert "default-src 'none'" in html
+
+    def test_the_font_is_embedded_not_fetched(self):
+        html = render_report(_submission(), _run())
+        assert "data:font/woff;base64," in html
+
+    def test_uses_the_site_s_design_tokens(self):
+        # A curator moving between the public site and this document should not feel
+        # they have changed software. These are malavi.css's own values.
+        html = render_report(_submission(), _run())
+        for token in ("--paper:#F4F3F8", "--ink:#17141F", "--accent:#5B4BA6",
+                      "League Gothic"):
+            assert token in html, f"{token} is not the site's token any more"
+
+    def test_styles_both_themes(self):
+        html = render_report(_submission(), _run())
+        assert "prefers-color-scheme: dark" in html
+
+
+class TestHonesty:
+    def test_an_incomplete_run_is_announced_before_anything_else(self):
+        """The single most dangerous thing this document could do is present a partial
+        run as a clean bill of health."""
+        html = render_report(_submission(), _run(CheckResult(
+            check_id="sequence_qc", outcome=Outcome.ERROR, error="R exited 1")))
+        assert "Validation is incomplete" in html
+        # Before the checks section, not buried inside it. Anchored on the heading text,
+        # which changed when the report was reordered — the rule did not.
+        # Anchored on the first check card rather than a heading; the heading was
+        # removed as redundant, the ordering rule was not.
+        assert html.index("Validation is incomplete") < html.index('class="check')
+
+    def test_a_clean_run_carries_no_incomplete_banner(self):
+        html = render_report(_submission(), _run(CheckResult(
+            check_id="prevalence_sanity", outcome=Outcome.PASS, evaluated=1, passed=1)))
+        assert "Validation is incomplete" not in html
+
+    def test_a_skipped_check_says_it_has_no_opinion(self):
+        html = render_report(_submission(), _run(CheckResult(
+            check_id="sequence_qc", outcome=Outcome.SKIP,
+            skip_reason="Rscript is not on PATH")))
+        assert "Rscript is not on PATH" in html
+        assert "no opinion" in html
+
+    def test_no_findings_does_not_read_as_verified(self):
+        html = render_report(_submission(), _run(CheckResult(
+            check_id="sequence_qc", outcome=Outcome.SKIP, skip_reason="no R here")))
+        # It must point the reader at the skips before they conclude anything.
+        assert "Read the skipped list" in html
+
+    def test_a_check_states_what_it_asserts(self):
+        """Assertions now appear on checks that could NOT run, not on findings.
+
+        On a finding card the assertion contradicted the headline above it — "No proposed
+        new lineage name is already a MalAvi lineage" printed over "TUMIG10 was listed as
+        new, but MalAvi already has that name". On a skipped check it still does the job it
+        was written for: saying what nobody has answered.
+        """
+        # A finding says what was found, in its own words, and names the subject.
+        html = render_report(_submission(), _run(CheckResult(
+            check_id="prevalence_sanity", outcome=Outcome.FINDING, evaluated=1,
+            findings=(Finding(subject="TUMIG19", message="9 found of 3 tested"),))))
+        assert "9 found of 3 tested" in html
+        assert "TUMIG19" in html
+
+        # A check that could not run still states what it was for, because that is the
+        # only way a reader knows what has gone unanswered.
+        skipped = render_report(_submission(), _run(CheckResult(
+            check_id="prevalence_sanity", outcome=Outcome.SKIP, evaluated=1,
+            skip_reason="the numbers were not supplied")))
+        assert "never greater than the number screened" in skipped
+        assert "the numbers were not supplied" in skipped
+
+    def test_a_finding_names_the_row_to_look_at(self):
+        html = render_report(_submission(), _run(CheckResult(
+            check_id="prevalence_sanity", outcome=Outcome.FINDING, evaluated=1,
+            findings=(Finding(subject="TUMIG19", message="bad",
+                              source={"sheet": "Hosts_and_Sites", "row": 19}),))))
+        assert "Hosts_and_Sites, row 19" in html
+
+    def test_normalizations_show_both_forms(self):
+        html = render_report(_submission(provenance={
+            "source": "template",
+            "normalizations": [{"field": "lineage_name", "submitted": "tumig19",
+                                "normalized": "TUMIG19"}],
+            "header_repairs": [],
+        }), _run())
+        assert "tumig19" in html and "TUMIG19" in html
+
+    def test_counts_are_not_shown_as_floats(self):
+        # Counts are carried as floats; "3.0 birds" reads as a bug in our software.
+        html = render_report(_submission(), _run())
+        assert ">3<" in html and ">3.0<" not in html
+
+    def test_the_report_never_claims_anything_was_ingested(self):
+        """The closing reassurance was removed on the project lead's instruction — it was
+        text a curator had read many times. What must remain true is that nothing in the
+        report claims the opposite."""
+        html = render_report(_submission(), _run())
+        for claim in ("has been added to MalAvi", "was added to MalAvi",
+                      "now in MalAvi", "ingested"):
+            assert claim not in html
+
+    def _retired_test_the_footer_states_nothing_has_been_ingested(self):
+        html = render_report(_submission(), _run())
+        assert "has been added to MalAvi" in html
+        # And carries the sampling-not-biology caveat, which must travel with the
+        # novelty reporting wherever it is shown.
+        assert "where people have looked" in html
+
+
+class TestSourceReferences:
+    def test_a_sheet_and_row_is_always_shown(self):
+        html = render_report(_submission(), _run(CheckResult(
+            check_id="prevalence_sanity", outcome=Outcome.FINDING, evaluated=1,
+            findings=(Finding(subject="X", message="m",
+                              source={"sheet": "Sequences", "row": 4}),))))
+        assert "Sequences, row 4" in html
+
+    def test_the_report_s_own_workbook_is_not_repeated_on_every_finding(self):
+        # Repeating one long filename beside every finding crowds out the references
+        # that actually locate something.
+        submission = _submission(provenance={"source": "template",
+                                             "workbook": "Long Workbook Name.xlsx",
+                                             "normalizations": [], "header_repairs": []})
+        html = render_report(submission, _run(CheckResult(
+            check_id="prevalence_sanity", outcome=Outcome.FINDING, evaluated=1,
+            findings=(Finding(subject="X", message="m",
+                              source={"file": "Long Workbook Name.xlsx"}),))))
+        # Named once, in the header; not again beside the finding.
+        assert html.count("Long Workbook Name.xlsx") == 1
+
+    def test_a_different_file_is_still_named(self):
+        submission = _submission(provenance={"source": "template",
+                                             "workbook": "Template.xlsx",
+                                             "normalizations": [], "header_repairs": []})
+        html = render_report(submission, _run(CheckResult(
+            check_id="prevalence_sanity", outcome=Outcome.FINDING, evaluated=1,
+            findings=(Finding(subject="X", message="m",
+                              source={"file": "Supplement.xlsx"}),))))
+        assert "Supplement.xlsx" in html
+
+
+class TestPdf:
+    """The PDF is the copy a curator opens, because Drive will not render HTML."""
+
+    def test_writes_a_pdf_when_the_renderer_is_available(self, tmp_path):
+        pytest.importorskip("weasyprint")
+        from malavi_curation.report_html import write_pdf
+
+        root = tmp_path / "intake"
+        root.mkdir()
+        html = render_report(_submission(), _run())
+        written = write_pdf(html, root / "report.pdf", intake_root=root)
+        assert written is not None and written.is_file()
+        assert written.read_bytes().startswith(b"%PDF-")
+
+    def test_the_pdf_is_owner_only_like_the_html(self, tmp_path):
+        pytest.importorskip("weasyprint")
+        from malavi_curation.report_html import write_pdf
+
+        root = tmp_path / "intake"
+        root.mkdir()
+        written = write_pdf(render_report(_submission(), _run()),
+                            root / "report.pdf", intake_root=root)
+        assert written.stat().st_mode & 0o077 == 0
+
+    def test_the_pdf_writer_honors_the_same_containment(self, tmp_path):
+        pytest.importorskip("weasyprint")
+        from malavi_curation.report_html import write_pdf
+
+        root = tmp_path / "intake"
+        root.mkdir()
+        with pytest.raises(ValueError, match="outside the intake tree"):
+            write_pdf("<p>x</p>", tmp_path / "escaped.pdf", intake_root=root)
+
+    def test_a_missing_renderer_returns_none_rather_than_raising(self, monkeypatch,
+                                                                 tmp_path):
+        """A missing optional dependency must not cost the curator their report.
+
+        The same posture the check suite takes: an unavailable capability is reported,
+        never fatal, and never silently treated as success.
+        """
+        import builtins
+
+        from malavi_curation.report_html import write_pdf
+
+        real_import = builtins.__import__
+
+        def no_weasyprint(name, *args, **kwargs):
+            if name == "weasyprint":
+                raise ImportError("not installed")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", no_weasyprint)
+        root = tmp_path / "intake"
+        root.mkdir()
+        assert write_pdf("<p>x</p>", root / "report.pdf", intake_root=root) is None
+
+    def test_the_print_stylesheet_pins_the_light_palette(self):
+        # Screen dark-mode colors print as dark blocks of ink. Print rules override.
+        html = render_report(_submission(), _run())
+        assert "@media print" in html
+        printed = html.split("@media print")[1]
+        assert "--paper:#FFFFFF" in printed
+        assert "counter(page)" in printed          # page numbers
+        assert "table-header-group" in printed     # headers repeat across pages
+        assert "break-inside:avoid" in printed     # a finding is not split
+
+
+class TestWriteContainment:
+    """The writer, not just a test, must refuse to put this file in the wrong place."""
+
+    def _tree(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "intake").mkdir()
+        return root
+
+    def test_writes_inside_the_intake_tree(self):
+        root = self._tree()
+        written = write_report("<p>x</p>", root / "intake" / "s" / "report.html",
+                               intake_root=root / "intake")
+        assert written.is_file()
+
+    def test_refuses_outside_the_intake_tree(self):
+        root = self._tree()
+        with pytest.raises(ValueError, match="outside the intake tree"):
+            write_report("<p>x</p>", root / "elsewhere.html",
+                         intake_root=root / "intake")
+
+    def test_refuses_a_traversal_out_of_the_tree(self):
+        root = self._tree()
+        with pytest.raises(ValueError, match="outside the intake tree"):
+            write_report("<p>x</p>", root / "intake" / ".." / "escaped.html",
+                         intake_root=root / "intake")
+
+    def test_refuses_to_follow_a_symlink_out_of_the_tree(self):
+        root = self._tree()
+        (root / "outside").mkdir()
+        link = root / "intake" / "sneaky"
+        link.symlink_to(root / "outside")
+        with pytest.raises(ValueError):
+            write_report("<p>x</p>", link / "report.html",
+                         intake_root=root / "intake")
+
+    def test_written_owner_only(self):
+        # Somebody else's unpublished data.
+        root = self._tree()
+        written = write_report("<p>x</p>", root / "intake" / "report.html",
+                               intake_root=root / "intake")
+        assert written.stat().st_mode & 0o077 == 0
+
+    def test_leaves_no_temporary_file_behind_on_failure(self):
+        root = self._tree()
+        target = root / "intake" / "report.html"
+        write_report("<p>ok</p>", target, intake_root=root / "intake")
+        assert [p.name for p in (root / "intake").iterdir()] == ["report.html"]
+
+
+def test_every_class_the_report_uses_is_defined_in_its_stylesheet():
+    """REGRESSION: the verdict block shipped unstyled because an edit silently no-opped.
+
+    The report is a single self-contained file with no external stylesheet, so a class
+    used in the markup and absent from the CSS produces a section that renders as plain
+    text — visibly wrong only if somebody looks at the rendered PDF, which is exactly the
+    step most likely to be skipped.
+    """
+    import re
+    from malavi_curation import report_html
+
+    source = Path(report_html.__file__).read_text(encoding="utf-8")
+    stylesheet = report_html._stylesheet()
+
+    # Classes written into markup by this module, excluding those built dynamically.
+    used = set()
+    for match in re.findall(r'class="([a-z0-9 _-]+)"', source):
+        used.update(part for part in match.split() if part)
+
+    defined = set(re.findall(r"\.([a-z][a-z0-9-]*)", stylesheet))
+    missing = sorted(used - defined)
+    assert not missing, f"classes used in the report but never styled: {missing}"
+
+
+def test_the_verdict_block_is_styled():
+    """The one part of the report that asks the curator to do something."""
+    from malavi_curation import report_html
+
+    stylesheet = report_html._stylesheet()
+    for rule in (".verdict", ".verdict-link", ".verdict-note"):
+        assert rule in stylesheet, f"{rule} is not defined"
+
+
+class TestPaperOnly:
+    """A paper with no data template is a submission, not an error.
+
+    The behaviour this replaces was worse than useless: the screen exited 1 and wrote
+    nothing, so a curator got an email about a submission and then found nothing to review
+    and no explanation.
+    """
+
+    def _metadata(self):
+        return {
+            "Email Address": "someone@example.edu",
+            "What is your first and last name?": "A Submitter",
+            "_fetched_at": "2026-08-06T22:01:00+00:00",
+            "Submission PDF and Supplementary Materials (associated with…)":
+                "https://drive.google.com/open?id=1EXAMPLEfileid0000000",
+        }
+
+    def test_it_says_plainly_that_nothing_was_checked(self):
+        from malavi_curation.report_html import render_paper_only_report
+        html = render_paper_only_report(self._metadata())
+        assert "Nothing here has been checked" in html
+
+    def test_it_offers_no_verdict_link(self):
+        """There is nothing to approve. A verdict link would invite a decision about
+        something nobody has examined."""
+        from malavi_curation.report_html import render_paper_only_report
+        html = render_paper_only_report(self._metadata())
+        assert "Record your verdict" not in html
+        assert "There is nothing to approve or reject here" in html
+
+    def test_it_links_the_paper(self):
+        from malavi_curation.report_html import render_paper_only_report
+        html = render_paper_only_report(self._metadata())
+        assert "1EXAMPLEfileid0000000" in html
+        assert "a paper without a filled-in data template" in html
+
+    def test_a_response_with_no_files_is_not_called_a_paper(self):
+        """A response with nothing attached used to get the paper-only wording, which told
+        a curator to read a paper that did not exist."""
+        from malavi_curation.report_html import render_paper_only_report
+        metadata = {k: v for k, v in self._metadata().items() if "drive.google" not in v}
+        html = render_paper_only_report(metadata)
+        assert "Nothing here has been checked" in html
+        assert "no files attached" in html
+        assert "Ask the submitter" in html
+        assert "a paper without a filled-in data template" not in html
+        assert "There is nothing to approve or reject here" in html
+
+    def test_it_names_the_action_that_moves_it_forward(self):
+        from malavi_curation.report_html import render_paper_only_report
+        html = render_paper_only_report(
+            self._metadata(), submit_form_url="https://example.org/form")
+        assert "Submit the data from this paper" in html
+        assert "https://example.org/form" in html
+
+    def test_it_survives_having_no_metadata_at_all(self):
+        from malavi_curation.report_html import render_paper_only_report
+        html = render_paper_only_report(None)
+        assert "Nothing here has been checked" in html
+        assert "No uploaded file was recorded" in html
+
+
+def test_every_finding_reaches_the_report():
+    """REGRESSION — a blocker: nine of twelve findings were silently deleted.
+
+    Info-level findings were accumulated into a per-group dict, then popped and discarded
+    the moment a heading for that group was created by some unrelated blocking finding. So
+    whether a finding reached the curator depended on what *else* happened to be in its
+    group, and the report disagreed with checks.json with no trace of the difference.
+
+    The invariant, restated after the report was reshaped on curator feedback: every
+    finding that BLOCKS or WARNS appears in full, and informational findings are counted
+    rather than listed. That is different from the bug: those findings used to vanish with
+    no trace at all and were not in any count, so the report and checks.json disagreed
+    silently. Being deliberately summarised is not the same as being lost.
+    """
+    import html as _html
+    from malavi_curation.checks import CheckResult, CheckRun, Finding, Outcome, Severity
+    from malavi_curation.report_html import render_report
+
+    def finding(subject, message):
+        return Finding(subject=subject, message=message, severity=Severity.INFO)
+
+    run = CheckRun(results=(
+        # A blocking finding, which creates the group heading …
+        CheckResult(check_id="name_already_in_malavi", outcome=Outcome.FINDING,
+                    evaluated=2, findings=(finding("SGS1", "the blocking one"),)),
+        # … and an info finding in the SAME group, which used to vanish because of it.
+        CheckResult(check_id="lineage_known", outcome=Outcome.FINDING,
+                    evaluated=2, findings=(finding("GRW04", "the quiet one"),)),
+        # An info finding in a group with no card at all: this one always survived.
+        CheckResult(check_id="host_not_in_malavi", outcome=Outcome.FINDING,
+                    evaluated=1, findings=(finding("Parus major", "the other quiet one"),)),
+    ), provenance={})
+
+    page = render_report({"records": []}, run)
+
+    # A blocking finding is shown in full, always.
+    assert "the blocking one" in page
+
+    # The informational ones are summarised, not silently dropped: the tally has to
+    # account for them, which is what makes the summary honest rather than a hiding place.
+    import re as _re
+    tally = _re.search(r"(\d+) other checks found nothing", page)
+    assert tally, "the report must account for the checks that did not stop the submission"
+    assert int(tally.group(1)) >= 2, \
+        f"two informational findings were not counted anywhere (tally said {tally.group(1)})"
+
+
+def test_the_report_refuses_to_guess_a_revision():
+    """REGRESSION: the verdict link always said revision 1.
+
+    The ledger accepts a verdict against any revision that exists, and only treats it as
+    standing if it names the CURRENT one. So after a resubmission an approval recorded
+    against revision 1 was accepted, stored, and never counted — the submission stalled
+    while the curator believed they had approved it. Holds carry forward across revisions,
+    so only approvals were lost, which made the failure one-sided and invisible.
+    """
+    from malavi_curation.report_html import render_report
+    from malavi_curation.checks import CheckRun
+
+    run = CheckRun(results=(), provenance={})
+    with pytest.raises(ValueError, match="needs the revision"):
+        render_report({"records": []}, run, submission_id="MALAVI-SUB-2026-000123")
+
+
+def test_the_verdict_link_carries_the_revision_it_was_given():
+    from urllib.parse import parse_qs, urlparse
+    from malavi_curation.report_html import render_report
+    from malavi_curation.checks import CheckRun
+    from malavi_curation.config import load_config
+    import re as _re
+
+    run = CheckRun(results=(), provenance={})
+    page = render_report({"records": []}, run,
+                         submission_id="MALAVI-SUB-2026-000123", revision=4)
+    link = _re.search(r'href="(https://docs\.google\.com/forms[^"]+)"', page)
+    assert link, "no verdict link was rendered"
+    entries = load_config()["review"]["verdict_form_entries"]
+    query = parse_qs(urlparse(link.group(1).replace("&amp;", "&")).query)
+    assert query[f"entry.{entries['revision']}"] == ["4"]
+
+
+class TestDisposition:
+    """One line at the top saying where the submission stands.
+
+    It never says "valid" or "approved": these checks support a curator's judgment and do
+    not replace it, and a report announcing a submission as valid invites the rubber stamp
+    the review process exists to prevent.
+    """
+
+    def _page(self, *results):
+        from malavi_curation.checks import CheckRun
+        from malavi_curation.report_html import render_report
+        return render_report(_submission(), CheckRun(results=results, provenance={}))
+
+    def test_a_blocking_finding_blocks(self):
+        page = self._page(CheckResult(
+            check_id="sequence_is_known_lineage", outcome=Outcome.FINDING, evaluated=1,
+            findings=(Finding(subject="X", message="identical to SGS1"),)))
+        assert "Needs correction before curation" in page
+
+    def test_an_error_makes_it_incomplete(self):
+        page = self._page(CheckResult(
+            check_id="sequence_qc", outcome=Outcome.ERROR, error="R exited 1"))
+        assert "Validation incomplete" in page
+
+    def test_a_blocking_finding_outranks_an_error(self):
+        page = self._page(
+            CheckResult(check_id="sequence_qc", outcome=Outcome.ERROR, error="R exited 1"),
+            CheckResult(check_id="sequence_is_known_lineage", outcome=Outcome.FINDING,
+                        evaluated=1, findings=(Finding(subject="X", message="identical"),)))
+        assert "Needs correction before curation" in page
+        assert "Validation incomplete" not in page
+
+    def test_a_skip_still_asks_for_review(self):
+        page = self._page(CheckResult(
+            check_id="sequence_qc", outcome=Outcome.SKIP, evaluated=1,
+            skip_reason="R was not available"))
+        assert "Ready for curator review" in page
+
+    def test_nothing_found_is_not_called_valid(self):
+        page = self._page(CheckResult(
+            check_id="sequence_qc", outcome=Outcome.PASS, evaluated=2))
+        assert "No automated problems found" in page
+        for overclaim in ("is valid", "Submission passed", "approved", "Hosts are correct"):
+            assert overclaim not in page
+
+    def test_a_check_that_examined_nothing_is_not_counted_as_clean(self):
+        page = self._page(CheckResult(check_id="vector_sanity", outcome=Outcome.PASS,
+                                      evaluated=0))
+        assert "1 other checks examined" not in page
+        assert "not relevant to this submission" in page
+
+
+class TestUrlSafety:
+    """Escaping makes a string safe to display; it says nothing about what a scheme does."""
+
+    def test_dangerous_schemes_are_rejected(self):
+        from malavi_curation.report_html import _safe_url
+        for bad in ("javascript:alert(1)//drive.google.com",
+                    "data:text/html,<script>x</script>",
+                    "vbscript:msgbox", "file:///etc/passwd",
+                    "http://drive.google.com/open?id=1", "https://evil.example/x"):
+            assert _safe_url(bad) is None, f"{bad!r} was allowed"
+
+    def test_the_two_real_hosts_are_allowed(self):
+        from malavi_curation.report_html import _safe_url
+        for good in ("https://drive.google.com/open?id=1ABC",
+                     "https://docs.google.com/forms/d/e/X/viewform?usp=pp_url"):
+            assert _safe_url(good) == good
+
+    def test_a_hostile_metadata_url_never_becomes_an_href(self):
+        from malavi_curation.report_html import _submitted_files
+        html = _submitted_files({"An upload": "javascript:alert(1)//drive.google.com"})
+        assert "javascript:" not in html
+
+
+def test_every_check_that_can_produce_a_finding_has_a_curator_headline():
+    """Presentation completeness, asserted rather than hoped for.
+
+    A check without a headline falls back to its own title, which is written as the thing
+    being ASSERTED — "Proposed names are free" — and printed over a finding that reads as
+    the opposite of what was found. Adding a check should fail this test rather than
+    silently inherit that fallback.
+    """
+    from malavi_curation.checks import CHECKS, Severity
+    from malavi_curation.report_html import FINDING_HEADLINES, CHECK_GROUPS
+
+    # Checks that can only ever pass or skip carry no finding text, so they are exempt.
+    needs_headline = {cid for cid, spec in CHECKS.items()
+                      if spec.severity in (Severity.BLOCKING, Severity.WARNING)}
+    missing = sorted(needs_headline - set(FINDING_HEADLINES))
+    assert not missing, (
+        "these checks can raise a finding but have no curator-facing headline, so the "
+        f"report would print their assertion instead: {missing}")
+
+
+def test_every_check_belongs_to_a_named_group():
+    """An unrecognised check lands under 'Other', which tells a curator nothing."""
+    from malavi_curation.checks import CHECKS
+    from malavi_curation.report_html import _group_of
+
+    ungrouped = sorted(cid for cid in CHECKS if _group_of(cid) == "Other")
+    assert not ungrouped, f"checks with no group: {ungrouped}"
+
+
+# ------------------------------------------- the ids the verdict form asks a curator for
+
+class _Verdict:
+    """Enough of ledger.Verdict for the report. Duck-typed, as the renderer reads it."""
+
+    def __init__(self, id, curator, at, revision=1, reason_text="", blocks=True):
+        self.id = id
+        self.curator = curator
+        self.at = at
+        self.revision = revision
+        self.reason_code = ""
+        self.reason_text = reason_text
+        self.blocks = blocks
+
+
+class _Correction:
+    def __init__(self, id, by, at, change, approved=False, applied=False, approved_by=""):
+        self.id = id
+        self.by = by
+        self.at = at
+        self.change = change
+        self.approved = approved
+        self.applied = applied
+        self.approved_by = approved_by
+
+
+class _Entry:
+    def __init__(self, verdicts=(), corrections=()):
+        self.verdicts = list(verdicts)
+        self.corrections = list(corrections)
+
+
+def test_a_standing_flag_is_printed_with_the_id_the_form_wants():
+    """B4: three of the form's five actions need a V1/C1 id, minted in a gitignored file.
+
+    So a curator could raise a flag and have no way to learn what to type to withdraw it,
+    and a lead could not approve a correction -- the gate every correction stops at.
+    """
+    entry = _Entry(verdicts=[
+        _Verdict("V1", "bob", "2026-08-02T01:00:00+00:00", reason_text="Host synonym?")])
+
+    html = report_html._standing_section(entry)
+
+    assert "V1" in html
+    assert "bob" in html and "Host synonym?" in html
+    assert "2026-08-02" in html
+    assert "Withdraw a flag you placed yourself" in html or "Withdraw a flag" in html
+
+
+def test_a_resolved_flag_is_not_listed_as_standing():
+    """`blocks` is the ledger's own rule -- retracted or overridden means it stopped."""
+    entry = _Entry(verdicts=[
+        _Verdict("V1", "bob", "2026-08-02T01:00:00+00:00", reason_text="withdrawn one",
+                 blocks=False)])
+
+    assert report_html._standing_section(entry) == ""
+
+
+def test_a_correction_awaiting_a_lead_shows_its_id():
+    entry = _Entry(corrections=[
+        _Correction("C1", "alice", "2026-08-03T00:00:00+00:00", "Host is Turdus merula.")])
+
+    html = report_html._standing_section(entry)
+
+    assert "C1" in html and "Host is Turdus merula." in html
+    assert "Approve a correction" in html
+
+
+def test_an_approved_but_unapplied_correction_is_shown_separately():
+    entry = _Entry(corrections=[
+        _Correction("C1", "alice", "2026-08-03T00:00:00+00:00", "Country spelling.",
+                    approved=True, approved_by="lead")])
+
+    html = report_html._standing_section(entry)
+
+    assert "C1" in html and "lead" in html
+    assert "new revision" in html
+    assert "Approve a correction" not in html, "it has already been approved"
+
+
+def test_an_applied_correction_is_not_listed_at_all():
+    entry = _Entry(corrections=[
+        _Correction("C1", "alice", "2026-08-03T00:00:00+00:00", "done",
+                    approved=True, applied=True, approved_by="lead")])
+
+    assert report_html._standing_section(entry) == ""
+
+
+def test_a_clean_submission_gets_no_empty_table():
+    assert report_html._standing_section(_Entry()) == ""
+    assert report_html._standing_section(None) == ""
+
+
+def test_the_reason_text_is_escaped():
+    """It is the curator's free text, and it reaches an HTML page."""
+    entry = _Entry(verdicts=[
+        _Verdict("V1", "bob", "2026-08-02T01:00:00+00:00",
+                 reason_text="<script>alert(1)</script>")])
+
+    html = report_html._standing_section(entry)
+
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_the_id_cell_uses_a_class_the_stylesheet_defines():
+    """A class that matches nothing ships an unstyled block nobody notices until print.
+
+    The id is the one value a curator has to copy by eye without mistyping, and
+    ``td.handle`` is the rule that makes it the most legible cell in the row.
+    """
+    entry = _Entry(verdicts=[_Verdict("V1", "bob", "2026-08-02T01:00:00+00:00")])
+
+    html = report_html._standing_section(entry)
+
+    assert 'class="handle"' in html
+    assert "td.handle" in report_html._stylesheet()
+
+
+class TestMorphospeciesSection:
+    """2026-09-23: the links a study makes between lineages and described species."""
+
+    def _links(self):
+        return [
+            {"lineage_name": "CARCRI03", "morphospecies": "Plasmodium huffi",
+             "genus": "Plasmodium", "reference": "Vieira et al 2024", "comment": None,
+             "origin": "ParasiteGenus", "source": {"sheet": "NewLineages", "row": 3}},
+            {"lineage_name": "CARCRI01", "morphospecies": "Leucocytozoon cariamae",
+             "genus": "Leucocytozoon", "reference": "Vieira et al 2023",
+             "comment": HOSTILE, "origin": "MorphoSpecies",
+             "source": {"sheet": "MorphoSpecies", "row": 4}},
+        ]
+
+    def test_absent_when_nothing_is_linked(self):
+        html = render_report(_submission(), _run())
+        assert "Morphospecies links" not in html
+
+    def test_every_link_is_shown_with_where_it_came_from(self, monkeypatch):
+        monkeypatch.setattr(report_html, "_morphospecies_in_store", lambda: {})
+        html = render_report(_submission(morphospecies=self._links()), _run())
+        assert "Morphospecies links" in html
+        assert "<i>Plasmodium huffi</i>" in html
+        assert "typed in the ParasiteGenus column of NewLineages" in html
+        assert "MorphoSpecies sheet" in html
+        assert "not checked" in html                      # no store to compare against
+        assert HOSTILE not in html                         # the comment is escaped
+
+    def test_a_second_species_for_a_linked_lineage_is_flagged(self, monkeypatch):
+        monkeypatch.setattr(report_html, "_morphospecies_in_store",
+                            lambda: {"CARCRI01": ["Leucocytozoon toddi"]})
+        html = render_report(_submission(morphospecies=self._links()), _run())
+        assert "a second species for this lineage" in html
+        assert "Leucocytozoon toddi" in html
+
+    def test_comments_about_morphology_are_listed_as_not_recorded(self, monkeypatch):
+        monkeypatch.setattr(report_html, "_morphospecies_in_store", lambda: {})
+        screen = [{"issues": [{"code": "comment_mentions_morphology", "subject": "CARCRI01",
+                               "severity": "info",
+                               "message": "CARCRI01: a record comment mentions morphology",
+                               "evidence": {"comment": "new species " + HOSTILE,
+                                            "row": 7, "sheet": "Hosts_and_Sites"}}],
+                   "sequences": []}]
+        html = render_report(_submission(morphospecies=self._links()), _run(), screen=screen)
+        assert "Mentioned in comments, not recorded" in html
+        assert "Nothing from a comment is written" in html
+        assert "<th>Comment, as submitted</th>" in html
+        assert "new species " in html and HOSTILE not in html      # verbatim, escaped
+        assert "<td class='rowno'>7</td>" in html
+
+    def test_the_section_appears_for_mentions_alone(self, monkeypatch):
+        monkeypatch.setattr(report_html, "_morphospecies_in_store", lambda: {})
+        screen = [{"issues": [{"code": "comment_mentions_morphology", "subject": "ARACAJ01",
+                               "severity": "info", "message": "ARACAJ01: new species"}],
+                   "sequences": []}]
+        html = render_report(_submission(), _run(), screen=screen)
+        assert "Morphospecies links" in html
+        assert "<th>Morphospecies</th>" not in html          # no table with no rows
+        assert "Mentioned in comments, not recorded" in html
+
+
+class TestSequencesTableLinks:
+    """2026-09-23: every sequence row links to its alignment and its FASTA, not only the
+    ones a finding happened to mention (PENOBS02 had neither)."""
+
+    def test_links_on_every_row_that_has_a_figure_and_a_sequence(self):
+        screen = [{"sequences": [
+            {"label": "CARCRI03", "raw_length": 5756, "offset": 0, "n_stop_codons": 0,
+             "verdict": "new", "nearest": [{"lineage": "SGS1", "distance": 3,
+                                            "comparable": 479}], "sequence": "ACGT"},
+            {"label": "PENOBS02", "raw_length": 479, "offset": 0, "n_stop_codons": 0,
+             "verdict": "new", "nearest": [{"lineage": "SGS1", "distance": 5,
+                                            "comparable": 479}], "sequence": "ACGT"},
+        ]}]
+        figures = [{"label": "CARCRI03", "positions": [], "rows": [], "notes": []},
+                   {"label": "PENOBS02", "positions": [], "rows": [], "notes": []}]
+        html = render_report(_submission(), _run(), screen=screen, alignments=figures)
+        for label in ("CARCRI03", "PENOBS02"):
+            assert f'href="#aln-{label}">the alignment</a>' in html
+            assert f'href="#seq-{label}">the sequence</a>' in html
+            assert f'id="aln-{label}"' in html             # and the anchors exist
+            assert f'id="seq-{label}"' in html
+
+    def test_no_alignment_link_when_no_figure_was_drawn(self):
+        screen = [{"sequences": [
+            {"label": "PENOBS02", "raw_length": 479, "offset": 0, "n_stop_codons": 0,
+             "verdict": "new", "nearest": [], "sequence": "ACGT"}]}]
+        html = render_report(_submission(), _run(), screen=screen, alignments=None)
+        # The Sequences TABLE knows which figures exist and omits the link; the checks
+        # section's green line does not and links regardless, like a finding does.
+        row = html.split("<td class='mono'>PENOBS02</td>", 1)[1].split("</tr>", 1)[0]
+        assert 'href="#aln-PENOBS02"' not in row
+        assert 'href="#seq-PENOBS02">the sequence</a>' in row
+
+
+class TestAltNamesTable:
+    """2026-09-23: the table that confused its first reader."""
+
+    def test_a_name_proposed_as_new_here_is_not_called_missing(self):
+        rows = [{"malavi_name": "TUMIG19", "alternative_name": "S4",
+                 "accessions": ["PQ241456"], "reference": "Vieira et al., 2024",
+                 "comment": "from individual S4",
+                 "source": {"sheet": "Alt_Lineage_names", "row": 4}}]
+        html = render_report(_submission(alternative_names=rows), _run())
+        assert "proposed as new in this submission" in html
+        assert "no such lineage in MalAvi" not in html
+        assert "from individual S4" in html                # the Comment column is shown
+        assert "Vieira et al., 2024" in html               # and the Reference
+        assert "<th>Sheet row</th>" in html
+        assert "Each row is one GenBank deposit" in html
+
+
+class TestCleanSequenceLine:
+    """2026-09-24: the green "looks new" line links to the picture and the FASTA too."""
+
+    def _screen(self):
+        return [{"issues": [{"code": "sequence_longer_than_window", "subject": "CARCRI03",
+                             "severity": "warn", "message": "long"}],
+                 "sequences": [
+                     {"label": "CARCRI03", "raw_length": 5756, "sequence": "ACGT"},
+                     {"label": "PENOBS02", "raw_length": 479, "sequence": "ACGT"}]}]
+
+    def test_the_clean_sequence_gets_both_links_under_its_green_line(self):
+        html = render_report(_submission(), _run(), screen=self._screen())
+        assert "Sequence (PENOBS02) looks new" in html
+        clean_card = html.split("Sequence (PENOBS02) looks new", 1)[1].split("<h3", 1)[0]
+        assert 'href="#aln-PENOBS02">see the alignment</a>' in clean_card
+        assert 'href="#seq-PENOBS02">see the sequence</a>' in clean_card
+
+    def test_several_clean_sequences_are_each_named(self):
+        screen = self._screen()
+        screen[0]["issues"] = []
+        html = render_report(_submission(), _run(), screen=screen)
+        assert "Sequences (CARCRI03, PENOBS02) look new" in html
+        for label in ("CARCRI03", "PENOBS02"):
+            assert f'<span class="subj">{label}</span> <a class="jump" href="#aln-{label}">' in html
+
+
+class TestIdenticalPairOnPageOne:
+    """2026-09-24: two names for one sequence is marked in red in the summary, not only
+    as a card among the checks."""
+
+    def test_both_names_are_marked_in_the_summary(self):
+        proposed = [{"lineage_name": n, "parasite_genus": "Leucocytozoon",
+                     "host_species": "Coccothraustes coccothraustes", "accessions": [],
+                     "source": {"sheet": "NewLineages", "row": i + 3}}
+                    for i, n in enumerate(("COCCOC06", "COCCOC07", "COCCOC08"))]
+        screen = [{"issues": [], "sequences": [],
+                   "identical_pairs": [["COCCOC06", "COCCOC08", 479]]}]
+        html = render_report(_submission(proposed_lineages=proposed), _run(), screen=screen)
+        summary = html.split("What was submitted", 1)[1].split("<h2", 1)[0]
+        assert '<span class="taken-name">COCCOC06</span>' in summary
+        assert '<span class="taken-name">COCCOC08</span>' in summary
+        assert "Same sequence as COCCOC08" in summary
+        assert "Same sequence as COCCOC06" in summary
+        assert '<span class="taken-name">COCCOC07</span>' not in summary
+
+
+class TestUnusualBasesList:
+    """2026-10-02: the report writes out every base that is unusual at its site, and says
+    which of them the nearest lineage carries too."""
+
+    @staticmethod
+    def _figure(unusual):
+        return [{"label": "EXAMPL01", "positions": [5], "notes": [],
+                 "rows": [{"name": "EXAMPL01", "is_query": True, "distance": None,
+                           "comparable": None,
+                           "cells": [{"base": "C", "state": "query"}]}],
+                 "columns": [], "nearest_name": "H_NEAR01", "unusual_bases": unusual}]
+
+    @staticmethod
+    def _base(position, base, kind="rare", carrying=2, covering=5543, nearest="T",
+              shared=False):
+        return {"position": position, "base": base, "kind": kind, "carrying": carrying,
+                "covering": covering, "nearest_base": nearest,
+                "shared_with_nearest": shared, "nearest_covers": nearest in "ACGT"}
+
+    def test_shared_and_unshared_bases_are_told_apart(self):
+        unusual = [self._base(12, "A", carrying=3, covering=5540, nearest="A", shared=True),
+                   self._base(240, "C"),
+                   self._base(324, "C", kind="never_observed", carrying=0)]
+        html = render_report(_submission(), _run(), alignments=self._figure(unusual))
+        assert "<b>3 bases unusual at their sites</b>" in html
+        assert "1 is also carried by H_NEAR01" in html
+        assert ("2 are at a position where H_NEAR01 carries another base, and are the ones "
+                "to check against the trace") in html
+        assert "<b>240 C</b>: carried by 2 of the 5,543 lineages" in html
+        assert "H_NEAR01 has T" in html
+        assert "<b>324 C</b>: carried by none of the 5,543 lineages" in html
+        assert "12 A (3 of 5,540)" in html                  # the shared one, in the sentence
+
+    def test_all_shared_says_none_is_a_miscall(self):
+        unusual = [self._base(12, "A", nearest="A", shared=True),
+                   self._base(40, "G", nearest="G", shared=True)]
+        html = render_report(_submission(), _run(), alignments=self._figure(unusual))
+        assert "2 are also carried by H_NEAR01" in html
+        assert "are not miscalls of this read" in html
+        assert "check against the trace" not in html
+
+    def test_an_invariant_site_change_is_said_as_one(self):
+        unusual = [self._base(7, "G", kind="invariant_site_change", carrying=0,
+                              covering=5550, nearest="A")]
+        html = render_report(_submission(), _run(), alignments=self._figure(unusual))
+        assert "<b>1 base unusual at its site</b>" in html
+        assert "all 5,550 lineages that cover this position carry one and the same" in html
+
+    def test_a_base_where_the_nearest_lineage_holds_nothing_is_not_called_a_difference(self):
+        """The nearest lineage is often partial. Where it has no base it says nothing,
+        and the report must not send a curator to the trace on its silence."""
+        unusual = [self._base(3, "G", nearest="-")]
+        html = render_report(_submission(), _run(), alignments=self._figure(unusual))
+        assert "<b>1 base unusual at its site</b>" in html
+        assert "1 falls where H_NEAR01 holds no base, so it says nothing about it" in html
+        assert "3 G (2 of 5,543)" in html
+        assert "carries another base" not in html
+        assert "check against the trace" not in html
+
+    def test_all_three_groups_together_read_correctly(self):
+        unusual = [self._base(12, "A", nearest="A", shared=True),
+                   self._base(240, "C"),
+                   self._base(3, "G", nearest="-"),
+                   self._base(5, "T", nearest="N")]
+        html = render_report(_submission(), _run(), alignments=self._figure(unusual))
+        assert "<b>4 bases unusual at their sites</b>" in html
+        assert "1 is also carried by H_NEAR01" in html
+        assert "1 is at a position where H_NEAR01 carries another base, and is the one" in html
+        assert "2 fall where H_NEAR01 holds no base, so it says nothing about them" in html
+
+    def test_nothing_unusual_prints_nothing(self):
+        html = render_report(_submission(), _run(), alignments=self._figure([]))
+        assert "unusual at" not in html
+
+
+class TestFullAlignment:
+    """2026-10-02 (to-do I): the whole alignment window, folded under each figure."""
+
+    @staticmethod
+    def _figure(query, neighbours, unusual=()):
+        return [{"label": "EXAMPL01", "positions": [5], "notes": [], "columns": [],
+                 "rows": [{"name": "EXAMPL01", "is_query": True, "distance": None,
+                           "comparable": None, "cells": [{"base": "C", "state": "query"}]}],
+                 "nearest_name": neighbours[0][0] if neighbours else "",
+                 "unusual_bases": list(unusual),
+                 "sequences": [{"name": "EXAMPL01", "seq": query}]
+                              + [{"name": n, "seq": s} for n, s in neighbours]}]
+
+    def test_the_rows_are_written_out_in_blocks_of_sixty(self):
+        query = ("ACGT" * 120)[:479]
+        same = query
+        off = query[:100] + ("G" if query[100] != "G" else "T") + query[101:]
+        partial = "-" * 10 + query[10:470] + "N" * 9
+        html = render_report(_submission(), _run(),
+                             alignments=self._figure(query, [("H_SAME1", same),
+                                                             ("H_OFF1", off),
+                                                             ("H_PART1", partial)]))
+        assert "Show the full alignment, all 479 columns" in html
+        assert html.count("<pre>") == 8                       # ceil(479 / 60)
+        # An identical neighbour is all dots; the one-off one shows its base at 101.
+        assert ("H_SAME1   " + "." * 60) in html
+        block = html[html.index("<pre>", html.index("<pre>") + 1):]  # the second block
+        assert "H_OFF1 " in block
+        # Gaps and Ns are shown as they are, never as agreement.
+        assert ("H_PART1   " + "-" * 10 + "." * 50) in html
+        assert html.count("NNNNNNNNN") == 1
+
+    def test_the_unusual_columns_are_underlined_on_the_submitted_row(self):
+        query = ("ACGT" * 120)[:479]
+        unusual = [{"position": 3, "base": "G", "kind": "rare", "carrying": 1,
+                    "covering": 5000, "nearest_base": "G", "shared_with_nearest": True,
+                    "nearest_covers": True}]
+        html = render_report(_submission(), _run(),
+                             alignments=self._figure(query, [("H_X1", query)], unusual))
+        assert '<span class="q">EXAMPL01  AC<span class="rare">G</span>T' in html
+
+    def test_the_ruler_numbers_every_tenth_column(self):
+        query = "A" * 479
+        html = render_report(_submission(), _run(),
+                             alignments=self._figure(query, [("H_X1", query)]))
+        first = html[html.index('<span class="ruler">'):html.index("</span>", html.index('<span class="ruler">'))]
+        assert first.rstrip().endswith("60")
+        assert "10" in first and "50" in first
+
+    def test_a_figure_without_rows_prints_no_block(self):
+        figures = [{"label": "EXAMPL01", "positions": [], "rows": [], "notes": []}]
+        html = render_report(_submission(), _run(), alignments=figures)
+        assert "Show the full alignment" not in html
+

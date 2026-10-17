@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use MalAvi data, please cite the original MalAvi database paper and, where relevant, the references below."
+title: "malavi_rebuild: a GitHub-hosted rebuild of the MalAvi avian haemosporidian database"
+authors:
+  - family-names: Ellis
+    given-names: Vincenzo A.
+    email: vaellis@udel.edu
+  - family-names: Bensch
+    given-names: Staffan
+type: software
+url: "https://github.com/vincenzoaellis/malavi_rebuild"
+references:
+  - type: article
+    title: "MalAvi: a public database of malaria parasites and other haemosporidians in avian hosts based on mitochondrial cytochrome b lineages"
+    authors:
+      - family-names: Bensch
+        given-names: Staffan
+      - family-names: Hellgren
+        given-names: Olof
+      - family-names: Pérez-Tris
+        given-names: Javier
+    journal: "Molecular Ecology Resources"
+    year: 2009
+    volume: "9"
+    start: 1353
+    end: 1358
+    doi: "10.1111/j.1755-0998.2009.02692.x"
